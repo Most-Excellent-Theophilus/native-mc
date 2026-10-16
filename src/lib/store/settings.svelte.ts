@@ -13,6 +13,9 @@ export const settings = createTypedStore("settings.json", {
   backupRemoveDeleted: false, // also delete from the bucket what you delete locally
   backupActive: false, // was running when the app last closed, so resume on launch
 
+  // File browser
+  viewMode: "grid" as "grid" | "list",
+
   // Sidebar
   sidebarWidth: 288, // px, set by dragging the sidebar edge
 });

@@ -233,7 +233,7 @@
 					<dd class="font-medium">{backup.counts.uploaded.toLocaleString()}</dd>
 				</div>
 				<div>
-					<dt class="text-xs text-muted-foreground bg-destructive">Removed</dt>
+					<dt class="text-xs text-muted-foreground ">Removed</dt>
 					<dd class="font-medium">{backup.counts.removed.toLocaleString()}</dd>
 				</div>
 				<div>

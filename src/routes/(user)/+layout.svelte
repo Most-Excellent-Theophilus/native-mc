@@ -5,6 +5,7 @@
   import AppSidebar from "$lib/components/app-sidebar.svelte";
   import ThemeToggle from "$lib/components/theme-toggle.svelte";
   import UserButton from "$lib/components/user-button.svelte";
+  import PathBreadCrumb from "$lib/components/path-bread-crumb.svelte";
 
   let { children } = $props();
 </script>
@@ -21,21 +22,8 @@
           orientation="vertical"
           class="me-2 data-vertical:h-4 data-vertical:self-auto"
         />
-        <Breadcrumb.Root>
-          <Breadcrumb.List>
-            <Breadcrumb.Item class="hidden md:block">
-              <Breadcrumb.Link href="##">lib</Breadcrumb.Link>
-            </Breadcrumb.Item>
-            <Breadcrumb.Separator class="hidden md:block" />
-            <Breadcrumb.Item class="hidden md:block">
-              <Breadcrumb.Link href="##">components</Breadcrumb.Link>
-            </Breadcrumb.Item>
-            <Breadcrumb.Separator class="hidden md:block" />
-            <Breadcrumb.Item>
-              <Breadcrumb.Page>button.svelte</Breadcrumb.Page>
-            </Breadcrumb.Item>
-          </Breadcrumb.List>
-        </Breadcrumb.Root>
+   <PathBreadCrumb />
+        
       </div>
       <div class="flex items-center space-x-1.5">
 
