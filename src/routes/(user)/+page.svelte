@@ -8,6 +8,7 @@
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { settings } from '$lib/store/settings.svelte';
 	import { loadOverview, type Overview } from '$lib/overview';
+  import BackupCard from '$lib/components/backup-card.svelte';
 
 	let overview = $state<Overview | null>(null);
 	let loadError = $state('');
@@ -96,7 +97,9 @@
 		{/if}
 
 		<!-- Row 1: who you are, what you can do, how you're set up -->
-		<div class="grid auto-rows-min gap-4 md:grid-cols-3">
+		<div class="grid auto-rows-min gap-4 md:grid-cols-2 lg:grid-cols-3">
+			<BackupCard />
+
 			<Card.Root class='bg-primary/5'>
 				<Card.Header>
 					<Card.Title>Profile</Card.Title>
@@ -124,26 +127,6 @@
 				</Card.Content>
 			</Card.Root>
 
-			<Card.Root class='bg-primary/5'>
-				<Card.Header>
-					<Card.Title>Rights</Card.Title>
-					<Card.Description>What this account can do</Card.Description>
-				</Card.Header>
-				<Card.Content>
-					<ul class="space-y-2 text-sm">
-						{#each overview.rights as right (right.key)}
-							<li class="flex items-center justify-between">
-								<span class={right.granted ? '' : 'text-muted-foreground line-through'}>
-									{right.label}
-								</span>
-								<Badge variant={right.granted ? 'secondary' : 'outline'}>
-									{right.granted ? 'Allowed' : 'No access'}
-								</Badge>
-							</li>
-						{/each}
-					</ul>
-				</Card.Content>
-			</Card.Root>
 
 			<Card.Root class='bg-primary/5'>
 				<Card.Header>
