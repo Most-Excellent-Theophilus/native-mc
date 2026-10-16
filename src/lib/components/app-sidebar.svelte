@@ -28,7 +28,11 @@
 
   const MIN_WIDTH = 200;
   const MAX_WIDTH = 560;
-
+  const path = $derived.by(() => {
+    const fromKit = page.url.searchParams.get("path");
+    if (fromKit !== null) return fromKit;
+    return new URLSearchParams(window.location.search).get("path") ?? "";
+  });
   const sidebar = useSidebar();
   const dir = restProps.side === "right" ? -1 : 1;
 
@@ -92,10 +96,12 @@
 
   const bucket = $derived(settings.data.backupBucket);
   const stateLabel = { upload: "U", remove: "D", error: "!" } as const;
+  const open = (p: string) => goto(`/preview?path=${encodeURIComponent(p)}`);
 
   // Let long names wrap instead of being cut off with "…".
-  const wrapBtn = "h-auto min-h-8 items-start py-1.5 cursor-pointer";
-  const wrapText = "block whitespace-normal break-all text-left";
+  const wrapBtn =
+    "h-auto min-h-8 items-start py-1.5 flex items-center cursor-pointer";
+  const wrapText = " truncate text-left";
 
   const toNode = (e: Entry): TreeNode => ({
     ...e,
@@ -175,48 +181,39 @@
 </script>
 
 <Sidebar.Root bind:ref {...restProps}>
-  <Sidebar.Content>
+  <Sidebar.Content class='bg-primary/5'>
     <Sidebar.Group>
       <Sidebar.GroupLabel>Pages</Sidebar.GroupLabel>
       <Sidebar.GroupContent>
         <Sidebar.Menu>
           <Sidebar.MenuItem>
-            <Sidebar.MenuButton  onclick={()=> {
-				goto('/')
-			}}   isActive={page.url.pathname=="/"} class='cursor-pointer'>
-			<Home />
+            <Sidebar.MenuButton
+              onclick={() => {
+                goto("/");
+              }}
+              isActive={page.url.pathname == "/"}
+              class="cursor-pointer"
+            >
+              <Home />
               <span>Home</span>
             </Sidebar.MenuButton>
           </Sidebar.MenuItem>
-		  <Sidebar.MenuItem>
-            <Sidebar.MenuButton  isActive={page.url.pathname=="/preview"} onclick={()=> {
-				goto('/preview')
-			}} class='cursor-pointer'>
-			<Folder />
+          <Sidebar.MenuItem>
+            <Sidebar.MenuButton
+              isActive={page.url.pathname == "/preview"}
+              onclick={() => {
+                goto("/preview");
+              }}
+              class="cursor-pointer"
+            >
+              <Folder />
               <span>Collections</span>
             </Sidebar.MenuButton>
           </Sidebar.MenuItem>
         </Sidebar.Menu>
       </Sidebar.GroupContent>
     </Sidebar.Group>
-    <Sidebar.Group>
-      <Sidebar.GroupLabel>Changes</Sidebar.GroupLabel>
-      <Sidebar.GroupContent>
-        <Sidebar.Menu>
-          {#each backup.changes.slice(0, 8) as c (c.id)}
-            <Sidebar.MenuItem>
-              <Sidebar.MenuButton title={c.path} class="{wrapBtn} pr-8">
-                <FileIcon class="mt-0.5" />
-                <span><span class={wrapText}>{leaf(c.path)}</span></span>
-              </Sidebar.MenuButton>
-              <Sidebar.MenuBadge>{stateLabel[c.kind]}</Sidebar.MenuBadge>
-            </Sidebar.MenuItem>
-          {:else}
-            <p class="px-2 text-xs text-muted-foreground">No changes yet.</p>
-          {/each}
-        </Sidebar.Menu>
-      </Sidebar.GroupContent>
-    </Sidebar.Group>
+    
 
     <Sidebar.Group>
       <Sidebar.GroupLabel
@@ -226,7 +223,7 @@
         <RefreshCwIcon class={loading ? "animate-spin" : ""} />
         <span class="sr-only">Refresh</span>
       </Sidebar.GroupAction>
-      <Sidebar.GroupContent>
+      <Sidebar.GroupContent class=' max-h-100 overflow-y-auto'>
         <Sidebar.Menu>
           {#if !settings.data.s3Alias}
             <p class="px-2 text-xs text-muted-foreground">
@@ -245,6 +242,24 @@
           {/if}
           {#each root as node (node.path)}
             {@render Tree({ node })}
+          {/each}
+        </Sidebar.Menu>
+      </Sidebar.GroupContent>
+    </Sidebar.Group>
+    <Sidebar.Group>
+      <Sidebar.GroupLabel>Changes</Sidebar.GroupLabel>
+      <Sidebar.GroupContent>
+        <Sidebar.Menu>
+          {#each backup.changes.slice(0, 8) as c (c.id)}
+            <Sidebar.MenuItem>
+              <Sidebar.MenuButton title={c.path} class="{wrapBtn} pr-8">
+                <FileIcon class="mt-0.5" />
+                <span><span class={wrapText}>{leaf(c.path)}</span></span>
+              </Sidebar.MenuButton>
+              <Sidebar.MenuBadge>{stateLabel[c.kind]}</Sidebar.MenuBadge>
+            </Sidebar.MenuItem>
+          {:else}
+            <p class="px-2 text-xs text-muted-foreground">No changes yet.</p>
           {/each}
         </Sidebar.Menu>
       </Sidebar.GroupContent>
@@ -289,7 +304,12 @@
 {#snippet Tree({ node }: { node: TreeNode })}
   {#if !node.dir}
     <Sidebar.MenuItem>
-      <Sidebar.MenuButton title={node.path} class="{wrapBtn} pr-16">
+      <Sidebar.MenuButton
+        title={node.path}
+        onclick={() => open(node.path)}
+        isActive={node.path == path}
+        class="{wrapBtn} pr-16"
+      >
         <FileIcon class="mt-0.5" />
         <span><span class={wrapText}>{node.name}</span></span>
       </Sidebar.MenuButton>
@@ -305,9 +325,13 @@
       >
         <Collapsible.Trigger>
           {#snippet child({ props })}
-            <Sidebar.MenuButton {...props} class={wrapBtn}>
+            <Sidebar.MenuButton
+              {...props}
+              class={wrapBtn}
+              isActive={node.path == path}
+            >
               <ChevronRightIcon class="mt-0.5 transition-transform" />
-              <FolderIcon class="mt-0.5" />
+              <!-- <FolderIcon class="mt-0.5" /> -->
               <span><span class={wrapText}>{node.name}</span></span>
             </Sidebar.MenuButton>
           {/snippet}

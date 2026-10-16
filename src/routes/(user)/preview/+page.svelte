@@ -7,7 +7,7 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import { openPath } from "@tauri-apps/plugin-opener";
   import { readFile, remove } from "@tauri-apps/plugin-fs";
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import ChevronRightIcon from "@lucide/svelte/icons/chevron-right";
   import DownloadIcon from "@lucide/svelte/icons/download";
   import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
@@ -30,6 +30,7 @@
     type Entry,
   } from "$lib/bucketFiles";
   import { ChevronLeft } from "@lucide/svelte";
+  import FilePreview from "$lib/components/file/file-preview.svelte";
 
   // page.url triggers the update; location.search is the always-current source in the webview.
   const path = $derived.by(() => {
@@ -39,21 +40,6 @@
   });
   const isFolder = $derived(path === "" || path.endsWith("/"));
   const bucket = $derived(settings.data.backupBucket);
-
-  // breadcrumb: [{ label, path }]
-  const crumbs = $derived.by(() => {
-    const parts = path.split("/").filter(Boolean);
-    const items = [{ label: bucket || "Bucket", path: "" }];
-    parts.forEach((p, i) => {
-      const isLast = i === parts.length - 1;
-      items.push({
-        label: p,
-        path:
-          parts.slice(0, i + 1).join("/") + (isLast && !isFolder ? "" : "/"),
-      });
-    });
-    return items;
-  });
 
   const fileName = $derived(path.split("/").filter(Boolean).pop() ?? "");
 
@@ -68,6 +54,7 @@
   let loading = $state(false);
   let error = $state("");
   let note = $state("");
+  
   let busy = $state(false);
   let tooBig = $state(false);
   let token = 0; // ignore results of an older navigation
@@ -81,10 +68,9 @@
   onDestroy(dropUrl);
 
   async function load() {
-    const mine = ++token;
+     const mine = ++token;
     const p = path;
     const folder = isFolder;
-    bucket; // reload when the bucket changes
     loading = true;
     error = "";
     note = "";
@@ -132,10 +118,12 @@
     }
   }
 
-  $effect(() => {
+   $effect(() => {
     path;
     bucket;
-    void load();
+    untrack(() => {
+      void load();
+    });
   });
 
   const go = (p: string) => goto(`/preview?path=${encodeURIComponent(p)}`);
@@ -182,9 +170,7 @@
   }
 </script>
 
-<div class="flex flex-1 flex-col gap-4 p-4">
-
-
+<div class="flex flex-1 flex-col gap-4 h-screen p-4">
   {#if !settings.data.s3Alias}
     <Card.Root class="bg-primary/5">
       <Card.Header>
@@ -327,7 +313,7 @@
           </p>
         </div>
       {:else}
-        <!-- <FilePreview {file} {url} {loading} {error} onRetry={load} /> -->
+        <FilePreview {file} {url} {loading} {error} onRetry={load} />
       {/if}
     </div>
   {/if}

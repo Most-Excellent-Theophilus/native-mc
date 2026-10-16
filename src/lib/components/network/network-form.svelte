@@ -58,7 +58,7 @@
   });
 </script>
 
-<div class="flex flex-1 items-center justify-center">
+<div class="flex  items-center justify-center">
   <div class="w-full max-w-xs px-3">
     <form method="POST" use:enhance>
       <div class="space-y-3 overflow-y-auto py-4">

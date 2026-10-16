@@ -11,7 +11,7 @@
     },
     "app": {
         "windows": [{
-            "title": "native-mc",
+            "title": "One Backup",
             "width": 800,
             "height": 600
         }],

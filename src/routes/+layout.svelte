@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
+  import { enable, isEnabled, disable } from "@tauri-apps/plugin-autostart";
+  // when using `"withGlobalTauri": true`, you may use
+  // const { enable, isEnabled, disable } = window.__TAURI__.autostart;
+
   import { page } from "$app/state";
   import { ensureMc } from "$lib/comands";
   import { isLoggedIn } from "$lib/mcAuth";
@@ -20,10 +24,14 @@
   async function init(): Promise<"ready" | "login"> {
     status = "checking";
     errorMessage = "";
+
     try {
       const mc = await ensureMc();
       const loggedIn = await isLoggedIn(mc);
 
+      if (!(await isEnabled())) {
+        void (await enable());
+      }
       if (!loggedIn) {
         // don't redirect if we're already on the login page
         if (page.url.pathname !== "/auth") {
@@ -73,11 +81,5 @@
   </div>
 {/if}
 <ModeWatcher />
-<Toaster
-  richColors
-  closeButton
-  popover="hint"
-  visibleToasts={1}
-  translate="yes"
-  position="top-center"
-/>
+
+<Toaster richColors closeButton visibleToasts={1} position="top-center" />
