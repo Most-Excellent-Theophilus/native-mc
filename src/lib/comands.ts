@@ -9,7 +9,8 @@
 import { Command } from "@tauri-apps/plugin-shell";
 import { platform, arch } from "@tauri-apps/plugin-os";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
-
+import { download } from "@tauri-apps/plugin-upload";
+import { mkdir } from "@tauri-apps/plugin-fs";
 const MC_VERSION = "RELEASE.2025-08-13T08-35-41Z";
 const BASE_URL = `https://github.com/minio/mc/releases/download/${MC_VERSION}`;
 
@@ -47,37 +48,37 @@ async function isMinioMc(scopeName: string): Promise<boolean> {
   }
 }
 
-/** Returns a scope name you can pass to Command.create() to run mc. */
-export async function ensureMc(opts: { localOnly?: boolean } = {}): Promise<string> {
-  // 1. Already on PATH? Skipped with localOnly: the "mc" scope only allows a few
-  //    fixed commands (see mc-installer.json), so the backup code needs the
-  //    downloaded copy, whose scope accepts any arguments.
+
+
+type Opts = {
+  localOnly?: boolean;
+  /** 0-100, or null when the server doesn't send a content length */
+  onProgress?: (pct: number | null) => void;
+};
+
+export async function ensureMc(opts: Opts = {}): Promise<string> {
   if (!opts.localOnly && (await isMinioMc("mc"))) return "mc";
 
   const { asset, file, scope } = target();
-
-  // 2. Installed by a previous run?
   if (await isMinioMc(scope)) return scope;
 
-  // 3. Download (curl ships with Windows 10+, macOS and most Linux distros).
-  //    GitHub redirects to a CDN, which curl -L follows.
-  const dest = await join(await appLocalDataDir(), "bin", file);
-  const dl = await Command.create("curl-mc", [
-    "-fsSL",
-    "--create-dirs",
-    `${BASE_URL}/${asset}`,
-    "-o",
-    dest,
-  ]).execute();
-  if (dl.code !== 0) throw new Error(`Download failed: ${dl.stderr}`);
+  // 3. Download with progress
+  const dir = await join(await appLocalDataDir(), "bin");
+  await mkdir(dir, { recursive: true });
+  const dest = await join(dir, file);
 
-  // 4. Make executable on Unix.
+  opts.onProgress?.(0);
+  await download(`${BASE_URL}/${asset}`, dest, ({ progressTotal, total }) => {
+    opts.onProgress?.(
+      total > 0 ? Math.min(100, Math.round((progressTotal / total) * 100)) : null,
+    );
+  });
+
+  // 4. chmod and 5. verify stay the same
   if (file === "mc") {
     const ch = await Command.create("chmod-mc", ["+x", dest]).execute();
     if (ch.code !== 0) throw new Error(`chmod failed: ${ch.stderr}`);
   }
-
-  // 5. Verify.
   if (!(await isMinioMc(scope))) {
     throw new Error("Downloaded file did not run as the MinIO client");
   }

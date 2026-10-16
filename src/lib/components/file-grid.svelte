@@ -60,13 +60,13 @@
 {:else if list.length === 0}
 	<p class="text-sm text-muted-foreground">Nothing here yet.</p>
 {:else if mode === 'list'}
-	<ul class="divide-y rounded-md border bg-background">
+	<ul class="divide-y rounded-md border bg-background overflow-y-auto h-[calc(100dvh-100px)] ">
 		{#each list as e (e.path)}
 			<li>
 				<button
 					type="button"
 					title={e.path}
-					onclick={() => open(e.path)}
+					on:click={() => open(e.path)}
 					class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
 				>
 					{#if e.dir}
@@ -84,14 +84,15 @@
 				</button>
 			</li>
 		{/each}
+		<br><br><br><br><br><br><br>
 	</ul>
 {:else}
-	<div class="grid min-w-0 grid-cols-2 gap-3 p-1 sm:grid-cols-3 md:grid-cols-4">
+<div class="h-[calc(100dvh-100px)] overflow-y-auto"><div class="grid min-w-0 grid-cols-2 gap-3 p-1 sm:grid-cols-3 md:grid-cols-4  pb-20">
 		{#each list as e (e.path)}
 			<button
 				type="button"
 				title={e.path}
-				onclick={() => open(e.path)}
+				on:click={() => open(e.path)}
 				class="group relative aspect-square w-full min-w-0 overflow-hidden rounded-lg border bg-card text-left text-card-foreground shadow-sm transition-colors hover:border-primary/50"
 			>
 				<!-- Preview -->
@@ -130,5 +131,6 @@
 				</div>
 			</button>
 		{/each}
-	</div>
+	</div></div>
+	
 {/if}

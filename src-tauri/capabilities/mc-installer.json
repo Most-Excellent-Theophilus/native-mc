@@ -2,24 +2,23 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "mc-installer",
   "description": "Detect, download and run the MinIO client",
-  "windows": [
-    "main"
-  ],
+  "windows": ["main"],
   "permissions": [
     "os:default",
+    "fs:default",
+    "upload:default",
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        { "path": "$APPLOCALDATA" },
+        { "path": "$APPLOCALDATA/**" }
+      ]
+    },
     {
       "identifier": "shell:allow-spawn",
       "allow": [
-        {
-          "name": "mc-local",
-          "cmd": "$APPLOCALDATA/bin/mc",
-          "args": true
-        },
-        {
-          "name": "mc-local-win",
-          "cmd": "$APPLOCALDATA/bin/mc.exe",
-          "args": true
-        }
+        { "name": "mc-local", "cmd": "$APPLOCALDATA/bin/mc", "args": true },
+        { "name": "mc-local-win", "cmd": "$APPLOCALDATA/bin/mc.exe", "args": true }
       ]
     },
     "shell:allow-kill",
@@ -27,42 +26,24 @@
       "identifier": "shell:allow-execute",
       "allow": [
         {
-          "name": "mc-alias-remove",
-          "cmd": "mc",
-          "args": [
-            "alias",
-            "remove",
-            {
-              "validator": "^[A-Za-z0-9_-]+$"
-            }
-          ]
-        },
-        {
           "name": "mc",
           "cmd": "mc",
-          "args": [
-            "--version"
-          ]
+          "args": ["--version"]
         },
         {
           "name": "mc-alias-list",
           "cmd": "mc",
-          "args": [
-            "alias",
-            "list",
-            "--json"
-          ]
+          "args": ["alias", "list", "--json"]
+        },
+        {
+          "name": "mc-alias-remove",
+          "cmd": "mc",
+          "args": ["alias", "remove", { "validator": "^[A-Za-z0-9_-]+$" }]
         },
         {
           "name": "mc-ls",
           "cmd": "mc",
-          "args": [
-            "ls",
-            "--json",
-            {
-              "validator": "^[A-Za-z0-9_-]+$"
-            }
-          ]
+          "args": ["ls", "--json", { "validator": "^[A-Za-z0-9_-]+$" }]
         },
         {
           "name": "mc-alias-set",
@@ -70,68 +51,20 @@
           "args": [
             "alias",
             "set",
-            {
-              "validator": "^[A-Za-z0-9_-]+$"
-            },
-            {
-              "validator": "^https?://\\S+$"
-            },
-            {
-              "validator": "^\\S+$"
-            },
-            {
-              "validator": "^\\S+$"
-            }
+            { "validator": "^[A-Za-z0-9_-]+$" },
+            { "validator": "^https?://\\S+$" },
+            { "validator": "^\\S+$" },
+            { "validator": "^\\S+$" }
           ]
         },
-        {
-          "name": "mc-local",
-          "cmd": "$APPLOCALDATA/bin/mc",
-          "args": true
-        },
-        {
-          "name": "mc-local-win",
-          "cmd": "$APPLOCALDATA/bin/mc.exe",
-          "args": true
-        },
-        {
-          "name": "curl-mc",
-          "cmd": "curl",
-          "args": [
-            "-fsSL",
-            "--create-dirs",
-            {
-              "validator": "^https://github\\.com/minio/mc/releases/download/RELEASE\\.[0-9TZ-]+/mc\\.(linux|darwin|windows)-(amd64|arm64)\\.RELEASE\\.[0-9TZ-]+(\\.exe)?$"
-            },
-            "-o",
-            {
-              "validator": "^.+$"
-            }
-          ]
-        },
+        { "name": "mc-local", "cmd": "$APPLOCALDATA/bin/mc", "args": true },
+        { "name": "mc-local-win", "cmd": "$APPLOCALDATA/bin/mc.exe", "args": true },
         {
           "name": "chmod-mc",
           "cmd": "chmod",
-          "args": [
-            "+x",
-            {
-              "validator": "^.+$"
-            }
-          ]
-        },
-        {
-          "name": "mc-alias-remove",
-          "cmd": "mc",
-          "args": [
-            "alias",
-            "remove",
-            {
-              "validator": "^[A-Za-z0-9_-]+$"
-            }
-          ]
+          "args": ["+x", { "validator": "^.+$" }]
         }
       ]
-    },
-    "fs:default"
+    }
   ]
 }

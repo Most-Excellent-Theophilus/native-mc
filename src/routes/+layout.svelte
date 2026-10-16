@@ -1,9 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import { enable, isEnabled, disable } from "@tauri-apps/plugin-autostart";
-  // when using `"withGlobalTauri": true`, you may use
-  // const { enable, isEnabled, disable } = window.__TAURI__.autostart;
+  import { enable, isEnabled } from "@tauri-apps/plugin-autostart";
 
   import { page } from "$app/state";
   import { ensureMc } from "$lib/comands";
@@ -21,17 +19,38 @@
   let status = $state<"checking" | "ready" | "error">("checking");
   let errorMessage = $state("");
 
-  async function init(): Promise<"ready" | "login"> {
+  // download progress: null = unknown size (indeterminate bar)
+  let downloading = $state(false);
+  let progress = $state<number | null>(null);
+
+  async function init(toastId: string | number): Promise<"ready" | "login"> {
     status = "checking";
     errorMessage = "";
+    downloading = false;
+    progress = null;
 
     try {
-      const mc = await ensureMc();
+      const mc = await ensureMc({
+        onProgress: (p) => {
+          downloading = true;
+          progress = p;
+          toast.loading(
+            p === null ? "Downloading client…" : `Downloading client… ${p}%`,
+            { id: toastId },
+          );
+        },
+      });
+
+      // download finished (or was never needed)
+      downloading = false;
+      toast.loading("Checking client…", { id: toastId });
+
       const loggedIn = await isLoggedIn(mc);
 
       if (!(await isEnabled())) {
-        void (await enable());
+        await enable();
       }
+
       if (!loggedIn) {
         // don't redirect if we're already on the login page
         if (page.url.pathname !== "/auth") {
@@ -40,22 +59,27 @@
         status = "ready";
         return "login";
       }
+
       status = "ready";
       return "ready";
     } catch (e) {
+      downloading = false;
       errorMessage = e instanceof Error ? e.message : String(e);
       status = "error";
-      throw e; // lets toast.promise show its error state
+      throw e; // lets run() show the error toast
     }
   }
 
   function run() {
-    toast.promise(init(), {
-      loading: "Checking client…",
-      success: (r) =>
-        r === "login" ? "Sign in to your storage" : "Client ready",
-      error: "Client setup failed",
-    });
+    const id = toast.loading("Checking client…");
+    init(id)
+      .then((r) =>
+        toast.success(
+          r === "login" ? "Sign in to your storage" : "Client ready",
+          { id },
+        ),
+      )
+      .catch(() => toast.error("Client setup failed", { id }));
   }
 
   onMount(run);
@@ -73,13 +97,28 @@
     </Alert.Root>
     <Button onclick={run}>Try again</Button>
   </div>
-{/if}
-
-{#if status == "checking"}
-  <div class="h-screen flex justify-center items-center">
+{:else}
+  <div class="flex h-screen flex-col items-center justify-center gap-6">
     <div class="animate-pulse"><Logo /></div>
+
+    {#if downloading}
+      <div class="w-56">
+        <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            class="h-full rounded-full bg-primary transition-[width] duration-150 {progress ===
+            null
+              ? 'w-1/3 animate-pulse'
+              : ''}"
+            style:width={progress === null ? undefined : `${progress}%`}
+          ></div>
+        </div>
+        <p class="mt-2 text-center text-xs text-muted-foreground">
+          Downloading storage client{progress === null ? "…" : ` ${progress}%`}
+        </p>
+      </div>
+    {/if}
   </div>
 {/if}
-<ModeWatcher />
 
+<ModeWatcher />
 <Toaster richColors closeButton visibleToasts={1} position="top-center" />

@@ -1,37 +1,48 @@
 {
-    "$schema": "../gen/schemas/desktop-schema.json",
-    "identifier": "default",
-    "description": "Capability for the main window",
-    "windows": ["main"],
-    "permissions": [
-        "core:default",
-        "opener:default",
-        "store:default",
-        "dialog:default",
-        "shell:default",
-        "os:default",
-        "dialog:allow-open",
-        "core:app:default",
-        "core:tray:default",
-        "core:menu:default",
-        "core:window:allow-show",
-        "core:window:allow-hide",
-        "core:window:allow-set-focus",
-        "core:window:allow-destroy",
-        "fs:default",
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "store:default",
+    "dialog:default",
+    "shell:default",
+    "os:default",
+    "dialog:allow-open",
+    "core:app:default",
+    "core:tray:default",
+    "core:menu:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-destroy",
+    "fs:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
         {
-            "identifier": "opener:allow-open-url",
-            "allow": [
-                { "url": "https://tauri.app" },
-                { "url": "mailto:*" }
-            ]
+          "url": "https://tauri.app"
         },
         {
-            "identifier": "opener:allow-open-path",
-            "allow": [
-                { "path": "$APPDATA/preview-cache/**" },
-                { "path": "$APPLOCALDATA/preview-cache/**" }
-            ]
+          "url": "mailto:*"
         }
-    ]
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$APPDATA/preview-cache/**"
+        },
+        {
+          "path": "$APPLOCALDATA/preview-cache/**"
+        }
+      ]
+    },
+    "upload:default"
+  ]
 }
