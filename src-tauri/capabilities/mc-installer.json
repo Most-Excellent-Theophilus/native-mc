@@ -1,0 +1,79 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "mc-installer",
+    "description": "Detect, download and run the MinIO client",
+    "windows": ["main"],
+    "permissions": [
+        "os:default",
+        {
+            "identifier": "shell:allow-execute",
+            "allow": [{
+                    "name": "mc-alias-remove",
+                    "cmd": "mc",
+                    "args": ["alias", "remove", { "validator": "^[A-Za-z0-9_-]+$" }]
+                },
+
+                {
+                    "name": "mc",
+                    "cmd": "mc",
+                    "args": ["--version"]
+                },
+                {
+                    "name": "mc-alias-list",
+                    "cmd": "mc",
+                    "args": ["alias", "list", "--json"]
+                },
+                {
+                    "name": "mc-ls",
+                    "cmd": "mc",
+                    "args": ["ls", "--json", { "validator": "^[A-Za-z0-9_-]+$" }]
+                },
+                {
+                    "name": "mc-alias-set",
+                    "cmd": "mc",
+                    "args": [
+                        "alias",
+                        "set",
+                        { "validator": "^[A-Za-z0-9_-]+$" },
+                        { "validator": "^https?://\\S+$" },
+                        { "validator": "^\\S+$" },
+                        { "validator": "^\\S+$" }
+                    ]
+                },
+                {
+                    "name": "mc-local",
+                    "cmd": "$APPLOCALDATA/bin/mc",
+                    "args": true
+                },
+                {
+                    "name": "mc-local-win",
+                    "cmd": "$APPLOCALDATA/bin/mc.exe",
+                    "args": true
+                },
+                {
+                    "name": "curl-mc",
+                    "cmd": "curl",
+                    "args": [
+                        "-fsSL",
+                        "--create-dirs",
+                        {
+                            "validator": "^https://github\\.com/minio/mc/releases/download/RELEASE\\.[0-9TZ-]+/mc\\.(linux|darwin|windows)-(amd64|arm64)\\.RELEASE\\.[0-9TZ-]+(\\.exe)?$"
+                        },
+                        "-o",
+                        { "validator": "^.+$" }
+                    ]
+                },
+                {
+                    "name": "chmod-mc",
+                    "cmd": "chmod",
+                    "args": ["+x", { "validator": "^.+$" }]
+                },
+                {
+                    "name": "mc-alias-remove",
+                    "cmd": "mc",
+                    "args": ["alias", "remove", { "validator": "^[A-Za-z0-9_-]+$" }]
+                }
+            ]
+        }
+    ]
+}
