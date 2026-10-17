@@ -1,6 +1,6 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
-    "productName": "native-mc",
+    "productName": "One Backup",
     "version": "0.1.0",
     "identifier": "com.samuel.native-mc",
     "build": {
@@ -20,12 +20,20 @@
                 "enable": true,
                 "scope": ["**"]
             },
-            "csp": {
-                "default-src": "'self'",
-                "media-src": "'self' blob: http: https:",
-                "img-src": "'self' data: blob: http: https:",
-                "connect-src": "'self' ipc: http://ipc.localhost http: https:"
-            }
+            "dangerousDisableAssetCspModification": ["style-src"],
+  
+           "csp": {
+  "default-src": "'self'",
+  "script-src": "'self' 'wasm-unsafe-eval'",
+  "worker-src": "'self' blob:",
+  "style-src": "'self' 'unsafe-inline'",
+  "font-src": "'self' data: blob: http: https: asset:",
+  "frame-src": "'self' blob: http: https: asset:",
+  "object-src": "'self' blob: http: https: asset:",
+  "media-src": "'self' blob: http: https: asset:",
+  "img-src": "'self' data: blob: http: https: asset:",
+  "connect-src": "'self' ipc: http://ipc.localhost http: https: asset: blob: data:"
+}
         }
     },
     "bundle": {

@@ -126,7 +126,7 @@
     });
   });
 
-  const go = (p: string) => goto(`/preview?path=${encodeURIComponent(p)}`);
+ 
 
   async function openExternally() {
     if (!file) return;
@@ -170,7 +170,7 @@
   }
 </script>
 
-<div class="flex flex-1 flex-col gap-4 h-screen p-4">
+<div class="flex flex-1 flex-col gap-4 h-[calc(100dvh-70px)] p-4">
   {#if !settings.data.s3Alias}
     <Card.Root class="bg-primary/5">
       <Card.Header>
@@ -192,42 +192,27 @@
   {:else if isFolder}
     <!-- Folder -->
     <Card.Root class="bg-primary/5">
-      <Card.Header>
-        <Card.Title class="flex flex-wrap items-center gap-2 text-base">
+      <Card.Header class='flex items-center justify-between'>
+        <Button
+              variant="outline"
+              size="lg"
+              onclick={() => {
+                window.history.back();
+              }}><ChevronLeft /> </Button
+            >
+
+      <div class="text-center items-center flex flex-col">
+          <Card.Title class="flex flex-wrap items-center gap-2 text-base">
           <span class="break-all">{path ? fileName : bucket}</span>
-          {#if !loading && !error}
+           {#if !loading && !error}
             <Badge variant="outline"
               >{entries.length} {entries.length === 1 ? "item" : "items"}</Badge
             >
           {/if}
         </Card.Title>
-        <Card.Description>Select a folder or file to open it.</Card.Description>
-      </Card.Header>
-      <Card.Content>
-        {#if loading}
-          <div
-            class="flex items-center gap-2 py-6 text-sm text-muted-foreground"
-          >
-            <Loader2Icon class="size-4 animate-spin" /> Reading the bucket…
-          </div>
-        {:else if error}
-          <p class="py-4 text-sm text-destructive">{error}</p>
-          <Button variant="outline" size="sm" onclick={load}>Retry</Button>
-        {:else if entries.length === 0}
-          <p class="py-4 text-sm text-muted-foreground">
-            This folder is empty.
-          </p>
-        {:else}
-          <div class="mb-3 flex gap-1 justify-between">
-            <Button
-              variant="outline"
-              size="lg"
-              onclick={() => {
-                window.history.back();
-              }}><ChevronLeft /> Back</Button
-            >
-
-            <div>
+        <Card.Description>Select a folder or file to open it.</Card.Description> 
+      </div>
+      <div>
               <Button
                 size="lg"
                 variant={settings.data.viewMode === "grid"
@@ -251,7 +236,23 @@
                 <span class="sr-only">List view</span>
               </Button>
             </div>
+      </Card.Header>
+      <Card.Content>
+        {#if loading}
+          <div
+            class="flex items-center gap-2 py-6 text-sm text-muted-foreground"
+          >
+            <Loader2Icon class="size-4 animate-spin" /> Reading the bucket…
           </div>
+        {:else if error}
+          <p class="py-4 text-sm text-destructive">{error}</p>
+          <Button variant="outline" size="sm" onclick={load}>Retry</Button>
+        {:else if entries.length === 0}
+          <p class="py-4 text-sm text-muted-foreground">
+            This folder is empty.
+          </p>
+        {:else}
+         
           <FileGrid {entries} />
         {/if}
       </Card.Content>
@@ -259,7 +260,15 @@
   {:else}
     <!-- File -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="min-w-0">
+       <Button
+              variant="outline"
+              size="lg"
+              onclick={() => {
+                window.history.back();
+              }}><ChevronLeft /> Back </Button
+            >
+
+      <div class="min-w-0 text-center">
         <h2 class="text-lg font-medium break-all">{fileName}</h2>
         {#if file}
           <p class="text-xs text-muted-foreground">{formatBytes(file.size)}</p>
@@ -313,7 +322,10 @@
           </p>
         </div>
       {:else}
+   
+
         <FilePreview {file} {url} {loading} {error} onRetry={load} />
+    
       {/if}
     </div>
   {/if}

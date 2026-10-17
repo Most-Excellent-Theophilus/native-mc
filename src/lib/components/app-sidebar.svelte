@@ -91,6 +91,7 @@
   });
 
   let root = $state<TreeNode[]>([]);
+  let openFolderPath = $state<string | null>(null);
   let loading = $state(false);
   let rootError = $state("");
 
@@ -223,20 +224,20 @@
         <RefreshCwIcon class={loading ? "animate-spin" : ""} />
         <span class="sr-only">Refresh</span>
       </Sidebar.GroupAction>
-      <Sidebar.GroupContent class=' max-h-100 overflow-y-auto'>
+      <Sidebar.GroupContent class='h-[30dvh] bg-accent outline overflow-y-auto'>
         <Sidebar.Menu>
           {#if !settings.data.s3Alias}
-            <p class="px-2 text-xs text-muted-foreground">
+            <p class="p-2 text-xs text-muted-foreground">
               Sign in to see your files.
             </p>
           {:else if !bucket}
-            <p class="px-2 text-xs text-muted-foreground">
+            <p class="p-2 text-xs text-muted-foreground">
               Choose a bucket in the backup card.
             </p>
           {:else if rootError}
             <p class="px-2 text-xs text-destructive">{rootError}</p>
           {:else if !loading && root.length === 0}
-            <p class="px-2 text-xs text-muted-foreground">
+            <p class="p-2 text-xs text-muted-foreground">
               This bucket is empty.
             </p>
           {/if}
@@ -248,7 +249,7 @@
     </Sidebar.Group>
     <Sidebar.Group>
       <Sidebar.GroupLabel>Changes</Sidebar.GroupLabel>
-      <Sidebar.GroupContent>
+      <Sidebar.GroupContent class='h-[30dvh] bg-accent outline overflow-y-auto'>
         <Sidebar.Menu>
           {#each backup.changes.slice(0, 8) as c (c.id)}
             <Sidebar.MenuItem>
@@ -259,7 +260,7 @@
               <Sidebar.MenuBadge>{stateLabel[c.kind]}</Sidebar.MenuBadge>
             </Sidebar.MenuItem>
           {:else}
-            <p class="px-2 text-xs text-muted-foreground">No changes yet.</p>
+            <p class="p-2 text-xs text-muted-foreground">No changes yet.</p>
           {/each}
         </Sidebar.Menu>
       </Sidebar.GroupContent>

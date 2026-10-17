@@ -13,6 +13,7 @@
   import { ModeWatcher } from "mode-watcher";
   import "./main.css";
   import Logo from "$lib/components/logo.svelte";
+  import InternetConnection from "$lib/components/internet-connection.svelte";
 
   let { children } = $props();
 
@@ -122,3 +123,4 @@
 
 <ModeWatcher />
 <Toaster richColors closeButton visibleToasts={1} position="top-center" />
+<InternetConnection />

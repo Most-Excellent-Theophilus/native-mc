@@ -66,7 +66,7 @@
 				<button
 					type="button"
 					title={e.path}
-					on:click={() => open(e.path)}
+					onclick={() => open(e.path)}
 					class="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
 				>
 					{#if e.dir}
@@ -84,15 +84,15 @@
 				</button>
 			</li>
 		{/each}
-		<br><br><br><br><br><br><br>
+		<div class='p-30 m-30'></div>
 	</ul>
 {:else}
-<div class="h-[calc(100dvh-100px)] overflow-y-auto"><div class="grid min-w-0 grid-cols-2 gap-3 p-1 sm:grid-cols-3 md:grid-cols-4  pb-20">
+<div class="h-[calc(100dvh-100px)] overflow-y-auto"><div class="grid min-w-0 grid-cols-2 gap-3 p-1 sm:grid-cols-3 md:grid-cols-4  pb-60">
 		{#each list as e (e.path)}
 			<button
 				type="button"
 				title={e.path}
-				on:click={() => open(e.path)}
+				onclick={() => open(e.path)}
 				class="group relative aspect-square w-full min-w-0 overflow-hidden rounded-lg border bg-card text-left text-card-foreground shadow-sm transition-colors hover:border-primary/50"
 			>
 				<!-- Preview -->

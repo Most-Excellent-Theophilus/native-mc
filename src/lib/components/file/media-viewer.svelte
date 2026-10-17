@@ -42,6 +42,7 @@
 		<video
 			src={url}
 			controls
+			autoplay
 			preload="metadata"
 			class="max-h-full max-w-full"
 			onerror={onMediaError}
@@ -54,7 +55,9 @@
 		<div class="flex size-16 items-center justify-center rounded-full bg-muted">
 			<Music class="size-8 text-muted-foreground" />
 		</div>
-		<audio src={url} controls preload="metadata" class="w-full max-w-md" onerror={onMediaError}
+		<audio  src={url} controls preload="metadata" class="w-full max-w-md" onerror={onMediaError}
+			autoplay
+		
 		></audio>
 	</div>
 {/if}

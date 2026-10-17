@@ -1,7 +1,7 @@
 <!-- src/lib/components/BackupCard.svelte -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { open } from '@tauri-apps/plugin-dialog';
+	import { ask, open } from '@tauri-apps/plugin-dialog';
 	import * as Card from '$lib/components/ui/card';
 	import * as Select from '$lib/components/ui/select';
 	import { Button } from '$lib/components/ui/button';
@@ -99,7 +99,7 @@
 	}
 </script>
 
-<Card.Root class="bg-primary/5 md:col-span-2 lg:col-span-3">
+<Card.Root class="bg-primary/5  h-full">
 	<Card.Header>
 		<Card.Title>Folder backup</Card.Title>
 		<Card.Description>Copy a folder to a bucket and keep it up to date</Card.Description>
@@ -192,7 +192,19 @@
 
 			<div class="flex gap-2">
 				{#if backup.running}
-					<Button variant="destructive" onclick={() => backup.stop()}>Stop backup</Button>
+					<Button variant="destructive" onclick={async() =>{ 
+						const res =await ask('Want to stop The BackUp Process?', {
+							kind:'warning',
+okLabel:'No',
+cancelLabel:'Yes',
+title:'Stop BackUp'
+
+						})
+						if (!res) {
+							
+							backup.stop()
+						}
+						}}>Stop backup</Button>
 				{:else}
 					<Button onclick={start} disabled={!canStart}>
 						{s.backupWatch ? 'Start and watch' : 'Back up now'}
@@ -253,7 +265,7 @@
 						{backup.running ? 'Waiting for files…' : 'Nothing yet. Start a backup to see changes here.'}
 					</p>
 				{:else}
-					<ul class="max-h-56 space-y-2.5 overflow-y-auto pr-1">
+					<ul class="max-h-[55dvh]  p-3 bg-accent space-y-2.5 overflow-y-auto pr-1">
 						{#each backup.changes as c (c.id)}
 							<li class="flex items-start justify-between gap-3 text-sm">
 								<div class="min-w-0">
