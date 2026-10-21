@@ -11,7 +11,7 @@ export const settings = createTypedStore("settings.json", {
   backupBucket: "",
   backupWatch: true, // keep watching after the first sync
   backupRemoveDeleted: false, // also delete from the bucket what you delete locally
-  backupActive: false, // was running when the app last closed, so resume on launch
+  backupSettleMinutes: 15, // a file is uploaded only after it has been unchanged this long (0 = at once)
 
   // File browser
   viewMode: "grid" as "grid" | "list",

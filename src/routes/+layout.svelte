@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import { enable, isEnabled } from "@tauri-apps/plugin-autostart";
+  import { enable } from "@tauri-apps/plugin-autostart";
 
   import { page } from "$app/state";
   import { ensureMc } from "$lib/comands";
@@ -48,9 +48,9 @@
 
       const loggedIn = await isLoggedIn(mc);
 
-      if (!(await isEnabled())) {
-        await enable();
-      }
+      // Always (re)register: the entry carries --hidden so a login launch goes
+      // straight to the tray, and older installs registered it without that.
+      await enable();
 
       if (!loggedIn) {
         // don't redirect if we're already on the login page

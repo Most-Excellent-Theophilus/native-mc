@@ -1,21 +1,22 @@
 // src/lib/backup.svelte.ts
-// Runs `mc mirror` (optionally --watch) as a child process and turns its JSON
-// output into reactive state for the card and the tray.
+// Thin client for the Rust backup engine (src-tauri/src/backup.rs).
 //
-// State lives at module level, so it survives navigating between pages and the
-// backup keeps running while the card is not on screen.
+// The engine, the tray and the taskbar progress all live in the Rust process, so
+// the backup keeps running when the window is hidden or closed to the tray. This
+// module only starts/stops it and mirrors its snapshot into reactive state.
 //
-// Progress granularity: `mc mirror --json` prints one line per finished object,
-// so progress moves per file, not per byte (a single huge file jumps at the end).
+// Progress: totals are fixed when a round starts, so the bar only moves forward.
+// It advances when each file finishes (mc does not report bytes mid-file).
 
-import { Command, type Child } from "@tauri-apps/plugin-shell";
-import { ensureMc } from "$lib/comands";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { ensureMc, localMcPath } from "$lib/comands";
 import { settings } from "$lib/store/settings.svelte";
-import { initTray, setTrayStatus } from "$lib/tray";
 
 export type Phase =
   | "idle"
   | "starting"
+  | "scanning"
   | "syncing"
   | "watching"
   | "done"
@@ -35,275 +36,107 @@ export type StartOptions = {
   bucket: string;
   watch: boolean;
   removeDeleted: boolean;
+  /** Minutes a file must stay unchanged before it is uploaded. */
+  settleMinutes: number;
 };
 
-const MAX_CHANGES = 50;
-const FIRST_IDLE_MS = 4000; // no output after start: nothing to copy, go straight to watching
-const IDLE_MS = 1500; // quiet this long after a burst: the burst is finished
+/** Mirrors `Snapshot` in backup.rs (camelCase). */
+type Snapshot = {
+  phase: Phase;
+  error: string;
+  destination: string;
+  settleMinutes: number;
+  filesDone: number;
+  filesTotal: number;
+  bytesDone: number;
+  bytesTotal: number;
+  failed: number;
+  percent: number;
+  current: string[];
+  pending: number;
+  nextReadyAt: number | null;
+  uploaded: number;
+  removed: number;
+  failedTotal: number;
+  changes: Change[];
+};
 
-const ZERO = { files: 0, totalFiles: 0, bytes: 0, totalBytes: 0, failed: 0 };
+const EMPTY: Snapshot = {
+  phase: "idle",
+  error: "",
+  destination: "",
+  settleMinutes: 0,
+  filesDone: 0,
+  filesTotal: 0,
+  bytesDone: 0,
+  bytesTotal: 0,
+  failed: 0,
+  percent: 0,
+  current: [],
+  pending: 0,
+  nextReadyAt: null,
+  uploaded: 0,
+  removed: 0,
+  failedTotal: 0,
+  changes: [],
+};
 
-let phase = $state<Phase>("idle");
-let error = $state("");
-let progress = $state({ ...ZERO });
-let changes = $state<Change[]>([]);
-let counts = $state({ uploaded: 0, removed: 0, failed: 0 });
-let destination = $state("");
-
-let child: Child | null = null;
-let stopping = false;
-let watching = false;
-let folderRoot = "";
-let lastStderr = "";
-let nextId = 1;
-let idleTimer: ReturnType<typeof setTimeout> | undefined;
-let trayTimer: ReturnType<typeof setTimeout> | undefined;
-let trayAt = 0;
-let trayStarted: Promise<void> | null = null;
-let resumed = false;
+let snap = $state<Snapshot>({ ...EMPTY });
+let starting: Promise<void> | null = null;
 
 const isRunning = () =>
-  phase === "starting" || phase === "syncing" || phase === "watching";
-
-function percent(): number {
-  const p = progress;
-  if (p.totalBytes > 0)
-    return Math.min(100, Math.round((p.bytes / p.totalBytes) * 100));
-  if (p.totalFiles > 0)
-    return Math.min(100, Math.round((p.files / p.totalFiles) * 100));
-  return 0;
-}
-
-function baseName(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
+  snap.phase === "starting" ||
+  snap.phase === "scanning" ||
+  snap.phase === "syncing" ||
+  snap.phase === "watching";
 
 /** Folder name as a safe object prefix, so different folders don't mix in one bucket. */
 function prefixFor(folder: string): string {
-  const name = baseName(folder).replace(/[^A-Za-z0-9._-]/g, "_");
+  const name = (folder.split(/[\\/]/).filter(Boolean).pop() ?? "")
+    .replace(/[^A-Za-z0-9._-]/g, "_");
   return name || "backup";
 }
 
-/** Strip the local folder or the remote destination so the card shows short paths. */
-function relative(path: string): string {
-  for (const root of [folderRoot, destination]) {
-    if (root && path.startsWith(root))
-      return path.slice(root.length).replace(/^[\\/]+/, "") || baseName(path);
-  }
-  return path;
+/** Call once when the UI loads: subscribe to the engine and fetch its current state. */
+function init(): Promise<void> {
+  starting ??= (async () => {
+    await listen<Snapshot>("backup-state", (e) => (snap = e.payload));
+    snap = await invoke<Snapshot>("backup_state");
+  })();
+  return starting;
 }
-
-// ---------- tray ----------
-
-function trayText(): string {
-  const last = changes[0];
-  switch (phase) {
-    case "starting":
-      return "Backup: starting…";
-    case "syncing":
-      return `Backing up ${percent()}% (${progress.files}/${progress.totalFiles} files)`;
-    case "watching":
-      return last
-        ? `Watching · last: ${baseName(last.path)}`
-        : "Watching for changes";
-    case "done":
-      return "Backup complete";
-    case "error":
-      return "Backup error";
-    default:
-      return "Backup idle";
-  }
-}
-
-function syncTray(force = false) {
-  const now = Date.now();
-  // Throttle: a burst of files would otherwise flood the tray with IPC calls.
-  if (!force && now - trayAt < 400) {
-    trayTimer ??= setTimeout(() => {
-      trayTimer = undefined;
-      syncTray(true);
-    }, 400);
-    return;
-  }
-  trayAt = now;
-  setTrayStatus({
-    text: trayText(),
-    title: phase === "syncing" ? `${percent()}%` : "",
-    running: isRunning(),
-  }).catch(() => {});
-}
-
-function setPhase(p: Phase) {
-  phase = p;
-  syncTray(true);
-}
-
-function ensureTray(): Promise<void> {
-  // A missing tray (e.g. Linux without AppIndicator) must never block the backup.
-  trayStarted ??= initTray({
-    shouldHide: () => isRunning(),
-    onToggle: () => (isRunning() ? void stop() : void startFromSettings()),
-  }).catch((e) => console.warn("Tray unavailable:", e));
-  return trayStarted;
-}
-
-// ---------- mc output ----------
-
-function armIdle(ms: number) {
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
-    if (!watching) return;
-    const settled = progress.files + progress.failed >= progress.totalFiles;
-    if (phase === "starting" || (phase === "syncing" && settled)) {
-      progress = { ...ZERO };
-      setPhase("watching");
-    }
-  }, ms);
-}
-
-function pushChange(kind: Change["kind"], path: string, size = 0) {
-  changes = [
-    { id: nextId++, kind, path: relative(path), size, at: Date.now() },
-    ...changes,
-  ].slice(0, MAX_CHANGES);
-}
-
-function onLine(raw: string) {
-  const line = raw.trim();
-  if (!line.startsWith("{")) {
-    if (line) lastStderr = line;
-    return;
-  }
-  let m: any;
-  try {
-    m = JSON.parse(line);
-  } catch {
-    return;
-  }
-
-  if (m.status === "error") {
-    const msg = m.error?.message ?? "Unknown error";
-    counts.failed++;
-    progress.failed++;
-    progress.totalFiles = Math.max(
-      progress.totalFiles,
-      progress.files + progress.failed,
-    );
-    pushChange("error", m.source ?? m.target ?? msg);
-    lastStderr = msg;
-  } else if (m.status === "success") {
-    if (phase === "starting" || phase === "watching") setPhase("syncing");
-
-    if (m.source) {
-      // Copied an object.
-      const size = Number(m.size) || 0;
-      progress.files++;
-      progress.bytes += size;
-      counts.uploaded++;
-      pushChange("upload", m.source, size);
-    } else if (m.target) {
-      // No source: a deletion mirrored to the bucket (--remove).
-      counts.removed++;
-      pushChange("remove", m.target);
-    }
-    progress.totalFiles = Math.max(
-      Number(m.totalCount) || 0,
-      progress.totalFiles,
-      progress.files + progress.failed,
-    );
-    progress.totalBytes = Math.max(
-      Number(m.totalSize) || 0,
-      progress.totalBytes,
-      progress.bytes,
-    );
-  } else {
-    return;
-  }
-
-  syncTray();
-  armIdle(IDLE_MS);
-}
-
-function fail(message: string) {
-  clearTimeout(idleTimer);
-  error = message;
-  child = null;
-  setPhase("error");
-  void settings.set("backupActive", false);
-}
-
-function onClose(code: number | null) {
-  clearTimeout(idleTimer);
-  child = null;
-  if (stopping) return;
-  if (code === 0 && !watching) {
-    progress.files = progress.totalFiles = Math.max(
-      progress.files,
-      progress.totalFiles,
-    );
-    setPhase("done");
-    void settings.set("backupActive", false);
-  } else {
-    fail(lastStderr || `mc exited with code ${code}`);
-  }
-}
-
-// ---------- public API ----------
 
 async function start(o: StartOptions): Promise<void> {
-  if (child || phase === "starting") return;
-
-  error = "";
-  lastStderr = "";
-  stopping = false;
-  progress = { ...ZERO };
-  changes = [];
-  counts = { uploaded: 0, removed: 0, failed: 0 };
-  watching = o.watch;
-  folderRoot = o.folder;
-  setPhase("starting");
-
+  if (isRunning()) return;
   try {
-    void ensureTray();
+    await init();
     await settings.hydrated;
-    const scope = await ensureMc({ localOnly: true }); // the local scope accepts any mc arguments
-    destination = `${o.alias}/${o.bucket}/${settings.data.s3AccessKey}/${prefixFor(o.folder)}`;
-
-    const args = ["mirror", "--json", "--overwrite"];
-    if (o.watch) args.push("--watch");
-    if (o.removeDeleted) args.push("--remove");
-    args.push(o.folder, destination);
-
-    const cmd = Command.create(scope, args);
-    cmd.stdout.on("data", onLine);
-    cmd.stderr.on("data", onLine); // mc may report errors on either stream
-    cmd.on("close", ({ code }) => onClose(code));
-    cmd.on("error", (e) => fail(String(e)));
-
-    child = await cmd.spawn();
-    await settings.set("backupActive", true);
-    armIdle(FIRST_IDLE_MS);
+    await ensureMc({ localOnly: true }); // make sure the local mc exists
+    const destination = `${o.alias}/${o.bucket}/${settings.data.s3AccessKey}/${prefixFor(o.folder)}`;
+    await invoke("backup_start", {
+      config: {
+        folder: o.folder,
+        destination,
+        mcPath: await localMcPath(),
+        watch: o.watch,
+        removeDeleted: o.removeDeleted,
+        settleMinutes: Math.max(0, Math.round(o.settleMinutes)),
+      },
+    });
   } catch (e) {
-    fail(e instanceof Error ? e.message : String(e));
+    snap = {
+      ...snap,
+      phase: "error",
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
 async function stop(): Promise<void> {
-  stopping = true;
-  clearTimeout(idleTimer);
-  const c = child;
-  child = null;
-  try {
-    await c?.kill();
-  } catch {
-    /* already gone */
-  }
-  progress = { ...ZERO };
-  setPhase("idle");
-  await settings.set("backupActive", false);
+  await invoke("backup_stop");
 }
 
-/** Start with whatever the card last saved. Used by the tray and by resume(). */
+/** Start with whatever the card last saved. */
 async function startFromSettings(): Promise<void> {
   await settings.hydrated;
   const s = settings.data;
@@ -314,42 +147,56 @@ async function startFromSettings(): Promise<void> {
     bucket: s.backupBucket,
     watch: s.backupWatch,
     removeDeleted: s.backupRemoveDeleted,
+    settleMinutes: s.backupSettleMinutes,
   });
-}
-
-/** Call once when the app UI loads: creates the tray and resumes a backup that was running. */
-async function init(): Promise<void> {
-  await ensureTray();
-  if (resumed) return;
-  resumed = true;
-  await settings.hydrated;
-  if (settings.data.backupActive) await startFromSettings();
 }
 
 export const backup = {
   get phase() {
-    return phase;
+    return snap.phase;
   },
   get running() {
     return isRunning();
   },
   get error() {
-    return error;
+    return snap.error;
   },
   get progress() {
-    return progress;
+    return {
+      files: snap.filesDone,
+      totalFiles: snap.filesTotal,
+      bytes: snap.bytesDone,
+      totalBytes: snap.bytesTotal,
+      failed: snap.failed,
+    };
   },
   get percent() {
-    return percent();
+    return snap.percent;
   },
   get changes() {
-    return changes;
+    return snap.changes;
   },
   get counts() {
-    return counts;
+    return {
+      uploaded: snap.uploaded,
+      removed: snap.removed,
+      failed: snap.failedTotal,
+    };
   },
   get destination() {
-    return destination;
+    return snap.destination;
+  },
+  /** Files waiting out the settle delay. */
+  get pending() {
+    return snap.pending;
+  },
+  /** Epoch ms when the first waiting file becomes eligible, or null. */
+  get nextReadyAt() {
+    return snap.nextReadyAt;
+  },
+  /** Files being uploaded right now. */
+  get current() {
+    return snap.current;
   },
   init,
   start,

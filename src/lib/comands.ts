@@ -50,6 +50,13 @@ async function isMinioMc(scopeName: string): Promise<boolean> {
 
 
 
+/** Absolute path of the mc binary that ensureMc({ localOnly: true }) installs.
+ *  The Rust backup engine runs this directly. */
+export async function localMcPath(): Promise<string> {
+  const { file } = target();
+  return join(await appLocalDataDir(), "bin", file);
+}
+
 type Opts = {
   localOnly?: boolean;
   /** 0-100, or null when the server doesn't send a content length */
