@@ -43,7 +43,7 @@
         {
           "name": "mc-ls",
           "cmd": "mc",
-          "args": ["ls", "--json", { "validator": "^[A-Za-z0-9_-]+$" }]
+          "args": ["ls", "--json", { "validator": "^[A-Za-z0-9_-]+(/\\S*)?$" }]
         },
         {
           "name": "mc-alias-set",

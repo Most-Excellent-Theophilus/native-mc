@@ -11,6 +11,17 @@ import { platform, arch } from "@tauri-apps/plugin-os";
 import { appLocalDataDir, join } from "@tauri-apps/api/path";
 import { download } from "@tauri-apps/plugin-upload";
 import { mkdir } from "@tauri-apps/plugin-fs";
+/** Rejects if `p` takes longer than `ms`, so a stuck process can't freeze startup. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    p.then(
+      (v) => (clearTimeout(t), resolve(v)),
+      (e) => (clearTimeout(t), reject(e)),
+    );
+  });
+}
+
 const MC_VERSION = "RELEASE.2025-08-13T08-35-41Z";
 const BASE_URL = `https://github.com/minio/mc/releases/download/${MC_VERSION}`;
 
@@ -41,7 +52,11 @@ function target(): { asset: string; file: string; scope: string } {
  *  On Linux `mc` is often Midnight Commander, so check the output text. */
 async function isMinioMc(scopeName: string): Promise<boolean> {
   try {
-    const out = await Command.create(scopeName, ["--version"]).execute();
+    const out = await withTimeout(
+      Command.create(scopeName, ["--version"]).execute(),
+      8_000,
+      "Client check",
+    );
     return out.code === 0 && out.stdout.includes("mc version");
   } catch {
     return false; // not found, or blocked by scope
@@ -75,15 +90,46 @@ export async function ensureMc(opts: Opts = {}): Promise<string> {
   const dest = await join(dir, file);
 
   opts.onProgress?.(0);
-  await download(`${BASE_URL}/${asset}`, dest, ({ progressTotal, total }) => {
-    opts.onProgress?.(
-      total > 0 ? Math.min(100, Math.round((progressTotal / total) * 100)) : null,
+
+  // Stall watchdog: fail if nothing arrives for 45 s (no network, GitHub blocked...),
+  // instead of showing the loading screen forever. Any progress resets the clock.
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  let fail: (e: Error) => void = () => {};
+  const stalled = new Promise<never>((_, reject) => (fail = reject));
+  const arm = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(
+      () =>
+        fail(
+          new Error(
+            "Couldn't download the storage client (no data for 45 s). Check your internet connection, or that github.com is reachable.",
+          ),
+        ),
+      45_000,
     );
-  });
+  };
+  arm();
+  try {
+    await Promise.race([
+      download(`${BASE_URL}/${asset}`, dest, ({ progressTotal, total }) => {
+        arm();
+        opts.onProgress?.(
+          total > 0 ? Math.min(100, Math.round((progressTotal / total) * 100)) : null,
+        );
+      }),
+      stalled,
+    ]);
+  } finally {
+    clearTimeout(stallTimer);
+  }
 
   // 4. chmod and 5. verify stay the same
   if (file === "mc") {
-    const ch = await Command.create("chmod-mc", ["+x", dest]).execute();
+    const ch = await withTimeout(
+      Command.create("chmod-mc", ["+x", dest]).execute(),
+      8_000,
+      "Setting permissions",
+    );
     if (ch.code !== 0) throw new Error(`chmod failed: ${ch.stderr}`);
   }
   if (!(await isMinioMc(scope))) {

@@ -8,9 +8,11 @@ export type S3Login = { alias: string; url: string };
 
 const ALIAS_RE = /^[A-Za-z0-9_-]+$/;
 
-/** Bucket the backup policy allows. Credentials are verified against it,
- *  because the policy doesn't grant s3:ListAllMyBuckets (so `mc ls <alias>` fails). */
-export const BACKUP_BUCKET = "backups";
+/** Buckets the access policy (backup-policy.json) grants. Credentials are verified by
+ *  listing one of them: `common` is listable as a whole, `personal` only under
+ *  `personal/<your user>/`. Listing all buckets is not allowed (no s3:ListAllMyBuckets). */
+export const COMMON_BUCKET = "common";
+export const PERSONAL_BUCKET = "personal";
 
 /** Scope names for the PATH `mc`, or the scope name returned by ensureMc(). */
 function names(mcScope: string) {
@@ -19,9 +21,11 @@ function names(mcScope: string) {
     : { list: mcScope, ls: mcScope, set: mcScope, remove: mcScope };
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+/** Rejects if `p` takes longer than `ms`. (The underlying process may keep running;
+ *  the point is that the UI never waits on it forever.) */
+export function withTimeout<T>(p: Promise<T>, ms: number, label = "operation"): Promise<T> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("timed out")), ms);
+    const t = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
     p.then(
       (v) => (clearTimeout(t), resolve(v)),
       (e) => (clearTimeout(t), reject(e)),
@@ -29,24 +33,113 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+type McResult = { code: number | null; stdout: string; stderr: string };
+type Reason = "ok" | "auth" | "cert" | "network" | "denied" | "other";
+
+/** Reads mc's JSON error line (or plain text) into one short message. */
+function mcMessage(r: McResult): string {
+  for (const text of [r.stdout, r.stderr]) {
+    for (const line of text.split("\n").reverse()) {
+      try {
+        const m = JSON.parse(line)?.error?.message;
+        if (typeof m === "string" && m) return m;
+      } catch {
+        /* not JSON */
+      }
+    }
+  }
+  return (r.stderr || r.stdout || "").trim().split("\n").pop()?.slice(0, 200) ?? "";
+}
+
+/** Tells apart wrong password, unreachable server and missing permission. */
+export function classify(r: McResult): Reason {
+  if (r.code === 0) return "ok";
+  const t = `${r.stdout}\n${r.stderr}`.toLowerCase();
+  if (/x509|certificate/.test(t)) return "cert";
+  if (/invalidaccesskeyid|signaturedoesnotmatch|access key id you provided|signature we calculated|invalid access key|unable to initialize new alias/.test(t))
+    return "auth";
+  if (/connection refused|no such host|i\/o timeout|dial tcp|no route to host|network is unreachable|context deadline|timed out|timeout/.test(t))
+    return "network";
+  if (/access denied|accessdenied/.test(t)) return "denied"; // credentials were accepted
+  return "other";
+}
+
+function explain(reason: Reason, r: McResult): string {
+  switch (reason) {
+    case "auth":
+      return "Wrong username or password.";
+    case "cert":
+      return "The server's HTTPS certificate isn't trusted. Use an http:// address or install the certificate.";
+    case "network":
+      return "Can't reach the server. Check the endpoint address and your network.";
+    case "denied":
+      return `Your login is correct, but this account can't access the "${COMMON_BUCKET}" or "${PERSONAL_BUCKET}" bucket. Ask your administrator.`;
+    default:
+      return mcMessage(r) || "Login failed.";
+  }
+}
+
+/** Paths this account can list under the policy. */
+function probePaths(alias: string, accessKey?: string): string[] {
+  const p = [`${alias}/${COMMON_BUCKET}`];
+  if (accessKey) p.push(`${alias}/${PERSONAL_BUCKET}/${accessKey}`);
+  return p;
+}
+
+/** Proves the credentials work: ok if ANY allowed path lists. Otherwise returns the
+ *  most telling failure (bad password > unreachable > no permission). */
+async function probe(
+  n: ReturnType<typeof names>,
+  alias: string,
+  accessKey: string | undefined,
+  timeoutMs: number,
+): Promise<{ ok: true } | { ok: false; reason: Reason; result: McResult }> {
+  const rank: Reason[] = ["auth", "cert", "network", "other", "denied"];
+  // All paths at once, so a dead server costs one timeout, not one per path.
+  const results = await Promise.all(
+    probePaths(alias, accessKey).map(async (path) => {
+      let result: McResult;
+      try {
+        result = await withTimeout(
+          Command.create(n.ls, ["ls", "--json", path]).execute(),
+          timeoutMs,
+          "Server check",
+        );
+      } catch (e) {
+        result = { code: -1, stdout: "", stderr: e instanceof Error ? e.message : String(e) };
+      }
+      return { reason: classify(result), result };
+    }),
+  );
+  if (results.some((r) => r.reason === "ok")) return { ok: true };
+  results.sort((x, y) => rank.indexOf(x.reason) - rank.indexOf(y.reason));
+  return { ok: false, ...results[0] };
+}
+
+export type SavedLogin = S3Login & { accessKey: string };
+
 /**
- * Returns every saved alias that has credentials AND can list buckets.
- * @param mcScope value returned by ensureMc()
+ * Saved aliases that have real credentials. Local and fast: it only reads mc's
+ * config, never touches the network, so it is safe to await at startup.
  * @param opts.ignore aliases to skip (default: MinIO's public "play" server)
  */
-export async function findS3Logins(
+export async function localLogins(
   mcScope: string,
   opts: { ignore?: string[]; timeoutMs?: number } = {},
-): Promise<S3Login[]> {
-  const { ignore = ["play"], timeoutMs = 10_000 } = opts;
+): Promise<SavedLogin[]> {
+  const { ignore = ["play"], timeoutMs = 8_000 } = opts;
   const n = names(mcScope);
 
-  // 1. Saved aliases. Output is one JSON object per line (includes secrets,
-  //    so we keep only alias + url and never log the raw output).
-  const list = await Command.create(n.list, ["alias", "list", "--json"]).execute();
+  // Output is one JSON object per line (includes secrets, so keep only
+  // alias + url + access key and never log the raw output).
+  const list = await withTimeout(
+    Command.create(n.list, ["alias", "list", "--json"]).execute(),
+    timeoutMs,
+    "Reading saved logins",
+  );
   if (list.code !== 0) return [];
 
-  const candidates: S3Login[] = [];
+  const out: SavedLogin[] = [];
   for (const line of list.stdout.split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -59,26 +152,43 @@ export async function findS3Logins(
         hasKeys &&
         !ignore.includes(a.alias)
       ) {
-        candidates.push({ alias: a.alias, url: a.URL });
+        out.push({ alias: a.alias, url: a.URL, accessKey: a.accessKey });
       }
     } catch {
       /* ignore non-JSON lines */
     }
   }
+  return out;
+}
 
-  // 2. Prove the credentials work: listing buckets exits 0 only on success.
+/**
+ * Asks the server whether a saved login still works.
+ *  "ok"          the server accepted it
+ *  "invalid"     the server rejected the username/password: sign in again
+ *  "unverified"  couldn't tell (offline, timeout, no bucket permission): keep the login
+ */
+export async function verifyLogin(
+  mcScope: string,
+  login: SavedLogin,
+  timeoutMs = 8_000,
+): Promise<"ok" | "invalid" | "unverified"> {
+  const r = await probe(names(mcScope), login.alias, login.accessKey, timeoutMs);
+  if (r.ok) return "ok";
+  return r.reason === "auth" ? "invalid" : "unverified";
+}
+
+/** Every saved alias whose credentials the server accepts (network required). */
+export async function findS3Logins(
+  mcScope: string,
+  opts: { ignore?: string[]; timeoutMs?: number } = {},
+): Promise<S3Login[]> {
+  const saved = await localLogins(mcScope, opts);
   const checked = await Promise.all(
-    candidates.map(async (c) => {
-      try {
-        const r = await withTimeout(
-          Command.create(n.ls, ["ls", "--json", `${c.alias}/${BACKUP_BUCKET}`]).execute(),
-          timeoutMs,
-        );
-        return r.code === 0 ? c : null;
-      } catch {
-        return null; // unreachable, bad creds, or timed out
-      }
-    }),
+    saved.map(async (c) =>
+      (await verifyLogin(mcScope, c, opts.timeoutMs)) === "ok"
+        ? { alias: c.alias, url: c.url }
+        : null,
+    ),
   );
   return checked.filter((c): c is S3Login => c !== null);
 }
@@ -108,6 +218,10 @@ export async function setAlias(
   secretKey: string,
 ): Promise<void> {
   const n = names(mcScope);
+  // Pasted credentials often carry a stray space/newline; a trailing "/" breaks the URL.
+  endpoint = endpoint.trim().replace(/\/+$/, "");
+  accessKey = accessKey.trim();
+  secretKey = secretKey.trim();
 
   const set = await Command.create(n.set, [
     "alias",
@@ -118,14 +232,13 @@ export async function setAlias(
     secretKey,
   ]).execute();
   if (set.code !== 0) {
-    throw new Error((set.stderr || set.stdout || "Login failed").trim().slice(0, 200));
+    throw new Error(explain(classify(set), set));
   }
 
-  const ls = await withTimeout(
-    Command.create(n.ls, ["ls", "--json", `${alias}/${BACKUP_BUCKET}`]).execute(),
-    10_000,
-  );
-  if (ls.code !== 0) {
-    throw new Error("The server rejected these credentials");
+  const r = await probe(n, alias, accessKey, 10_000);
+  if (!r.ok) {
+    // Don't leave a half-working alias behind.
+    await Command.create(n.remove, ["alias", "remove", alias]).execute().catch(() => {});
+    throw new Error(explain(r.reason, r.result));
   }
 }

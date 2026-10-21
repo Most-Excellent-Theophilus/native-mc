@@ -95,8 +95,7 @@
   let loading = $state(false);
   let rootError = $state("");
 
-  const bucket = $derived(settings.data.backupBucket);
-  const stateLabel = { upload: "U", remove: "D", error: "!" } as const;
+  const stateLabel = { upload: "U", remove: "D", restore: "R", error: "!" } as const;
   const open = (p: string) => goto(`/preview?path=${encodeURIComponent(p)}`);
 
   // Let long names wrap instead of being cut off with "…".
@@ -156,7 +155,6 @@
 
   // Reload when the bucket changes, and shortly after the backup uploads or removes files.
   $effect(() => {
-    bucket;
     settings.data.s3Alias;
     backup.counts.uploaded;
     backup.counts.removed;
@@ -218,7 +216,7 @@
 
     <Sidebar.Group>
       <Sidebar.GroupLabel
-        >{bucket ? `Files in ${bucket}` : "Files"}</Sidebar.GroupLabel
+        >Buckets</Sidebar.GroupLabel
       >
       <Sidebar.GroupAction title="Refresh" onclick={refresh}>
         <RefreshCwIcon class={loading ? "animate-spin" : ""} />
@@ -230,15 +228,11 @@
             <p class="p-2 text-xs text-muted-foreground">
               Sign in to see your files.
             </p>
-          {:else if !bucket}
-            <p class="p-2 text-xs text-muted-foreground">
-              Choose a bucket in the backup card.
-            </p>
           {:else if rootError}
             <p class="px-2 text-xs text-destructive">{rootError}</p>
           {:else if !loading && root.length === 0}
             <p class="p-2 text-xs text-muted-foreground">
-              This bucket is empty.
+              No buckets available.
             </p>
           {/if}
           {#each root as node (node.path)}
@@ -251,7 +245,7 @@
       <Sidebar.GroupLabel>Changes</Sidebar.GroupLabel>
       <Sidebar.GroupContent class='h-[30dvh] bg-accent outline overflow-y-auto'>
         <Sidebar.Menu>
-          {#each backup.changes.slice(0, 8) as c (c.id)}
+          {#each backup.changes.slice(0, 8) as c (`${c.jobId}:${c.id}`)}
             <Sidebar.MenuItem>
               <Sidebar.MenuButton title={c.path} class="{wrapBtn} pr-8">
                 <FileIcon class="mt-0.5" />

@@ -101,6 +101,10 @@ fn status_text(s: &Snapshot) -> String {
             "Backing up {}% · {}/{} files",
             s.percent, s.files_done, s.files_total
         ),
+        Phase::Restoring => format!(
+            "Restoring {}% · {}/{} files",
+            s.percent, s.files_done, s.files_total
+        ),
         Phase::Watching if !s.error.is_empty() => format!("Backup problem: {}", s.error),
         Phase::Watching if s.pending > 0 => format!(
             "Up to date · {} file{} waiting ({} min delay)",
@@ -140,7 +144,7 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
             #[cfg(not(target_os = "linux"))]
             let _ = st.tray.set_tooltip(Some(&text));
             #[cfg(target_os = "macos")]
-            let _ = st.tray.set_title(if snap.phase == Phase::Syncing {
+            let _ = st.tray.set_title(if matches!(snap.phase, Phase::Syncing | Phase::Restoring) {
                 Some(format!("{}%", snap.percent))
             } else {
                 None
@@ -151,7 +155,7 @@ pub fn update(app: &AppHandle, snap: &Snapshot) {
 
     // Taskbar / Dock progress, driven by the same snapshot as everything else.
     let (status, progress, code) = match snap.phase {
-        Phase::Syncing => (ProgressBarStatus::Normal, snap.percent as u64, 1u8),
+        Phase::Syncing | Phase::Restoring => (ProgressBarStatus::Normal, snap.percent as u64, 1u8),
         Phase::Starting | Phase::Scanning => (ProgressBarStatus::Indeterminate, 0, 2),
         _ => (ProgressBarStatus::None, 0, 0),
     };

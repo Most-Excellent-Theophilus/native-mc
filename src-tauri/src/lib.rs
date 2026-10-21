@@ -26,6 +26,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             backup::backup_start,
             backup::backup_stop,
+            backup::backup_restore,
+            backup::backup_forget,
             backup::backup_state
         ])
         .setup(|app| {

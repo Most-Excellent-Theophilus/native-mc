@@ -19,8 +19,13 @@
 //!   the tray tooltip/menu and the taskbar.
 //! * What was uploaded is remembered in `backup-index.json`, so restarts do not
 //!   upload everything again.
-//! * The job is saved to `backup-job.json`; if it was running when the app
-//!   quit, it resumes on the next launch (the app autostarts hidden at login).
+//! * Several folders can be backed up at once. Each is its own job (own index,
+//!   own progress); the tray and taskbar show the combined state.
+//! * The jobs are saved to `backup-jobs.json`; the ones that were running when
+//!   the app quit resume on the next launch (the app autostarts hidden at login).
+//! * Restore: a job can be switched to a download. `Missing` brings back only
+//!   what the folder lacks; `Full` also replaces files that differ from the
+//!   backup. The folder's backup is paused meanwhile and resumes afterwards.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -54,6 +59,8 @@ fn default_settle() -> u32 {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct JobConfig {
+    /// Stable id of the folder entry in the UI.
+    pub id: String,
     pub folder: String,
     /// `alias/bucket/prefix`, no trailing slash needed.
     pub destination: String,
@@ -79,6 +86,7 @@ pub enum Phase {
     Starting,
     Scanning,
     Syncing,
+    Restoring,
     Watching,
     Done,
     Error,
@@ -93,7 +101,7 @@ impl Default for Phase {
 #[derive(Clone, Serialize)]
 pub struct Change {
     pub id: u64,
-    /// "upload" | "remove" | "error"
+    /// "upload" | "remove" | "restore" | "error"
     pub kind: &'static str,
     pub path: String,
     pub size: u64,
@@ -125,6 +133,7 @@ pub struct Snapshot {
     // Session totals.
     pub uploaded: u64,
     pub removed: u64,
+    pub restored: u64,
     pub failed_total: u64,
 
     pub changes: Vec<Change>,
@@ -134,7 +143,7 @@ impl Snapshot {
     pub fn is_active(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Starting | Phase::Scanning | Phase::Syncing | Phase::Watching
+            Phase::Starting | Phase::Scanning | Phase::Syncing | Phase::Restoring | Phase::Watching
         )
     }
 
@@ -149,11 +158,31 @@ impl Snapshot {
     }
 }
 
-#[derive(Default)]
 struct Shared {
+    id: String,
     snap: Mutex<Snapshot>,
     last_emit: Mutex<Option<Instant>>,
     next_id: AtomicU64,
+}
+
+impl Shared {
+    fn new(id: &str) -> Self {
+        Shared {
+            id: id.to_string(),
+            snap: Mutex::new(Snapshot::default()),
+            last_emit: Mutex::new(None),
+            next_id: AtomicU64::new(0),
+        }
+    }
+}
+
+/// What the UI receives: a job's snapshot tagged with the job id.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct JobEvent<'a> {
+    id: &'a str,
+    #[serde(flatten)]
+    snap: &'a Snapshot,
 }
 
 struct Run {
@@ -161,10 +190,14 @@ struct Run {
     handle: JoinHandle<()>,
 }
 
+struct Job {
+    shared: Arc<Shared>,
+    run: Option<Run>,
+}
+
 #[derive(Default)]
 pub struct Engine {
-    run: Mutex<Option<Run>>,
-    shared: Arc<Shared>,
+    jobs: Mutex<HashMap<String, Job>>,
 }
 
 // -------------------------------------------------------------- helpers ----
@@ -229,8 +262,16 @@ fn publish(app: &AppHandle, shared: &Shared, snap: &Snapshot, force: bool) {
         }
         *last = Some(Instant::now());
     }
-    let _ = app.emit(STATE_EVENT, snap);
-    tray::update(app, snap);
+    let _ = app.emit(
+        STATE_EVENT,
+        JobEvent {
+            id: &shared.id,
+            snap,
+        },
+    );
+    // The tray and taskbar show all jobs together.
+    let combined = app.state::<Engine>().aggregate();
+    tray::update(app, &combined);
 }
 
 fn push_change(shared: &Shared, s: &mut Snapshot, kind: &'static str, path: &str, size: u64) {
@@ -259,6 +300,8 @@ struct Entry {
 /// What has already been uploaded, so restarts only send what changed.
 #[derive(Default, Serialize, Deserialize)]
 struct Index {
+    #[serde(default)]
+    id: String,
     folder: String,
     destination: String,
     files: HashMap<String, Entry>,
@@ -268,17 +311,21 @@ struct Index {
 }
 
 impl Index {
-    fn path(dir: &Path) -> PathBuf {
-        dir.join("backup-index.json")
+    fn path(dir: &Path, id: &str) -> PathBuf {
+        dir.join(format!("backup-index-{id}.json"))
     }
 
     fn load(dir: &Path, cfg: &JobConfig) -> Index {
-        let loaded: Option<Index> = std::fs::read(Self::path(dir))
+        let loaded: Option<Index> = std::fs::read(Self::path(dir, &cfg.id))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
         match loaded {
-            Some(i) if i.folder == cfg.folder && i.destination == cfg.destination => i,
+            Some(i) if i.folder == cfg.folder && i.destination == cfg.destination => Index {
+                id: cfg.id.clone(),
+                ..i
+            },
             _ => Index {
+                id: cfg.id.clone(),
                 folder: cfg.folder.clone(),
                 destination: cfg.destination.clone(),
                 ..Default::default()
@@ -288,7 +335,7 @@ impl Index {
 
     fn save(&self, dir: &Path) {
         if let Ok(bytes) = serde_json::to_vec(self) {
-            write_atomic(&Self::path(dir), &bytes);
+            write_atomic(&Self::path(dir, &self.id), &bytes);
         }
     }
 }
@@ -678,7 +725,7 @@ fn fail(app: &AppHandle, shared: &Shared, stop: &AtomicBool, msg: String) {
         s.error = msg;
         s.current.clear();
     });
-    save_job(app, None, false);
+    save_job(app, None, &shared.id, false);
 }
 
 fn run(
@@ -861,7 +908,7 @@ fn run(
                 s.next_ready_at = None;
                 s.current.clear();
             });
-            save_job(app, None, false);
+            save_job(app, None, &shared.id, false);
             return;
         }
 
@@ -887,89 +934,512 @@ fn run(
     }
 }
 
-// ------------------------------------------------------------ job store ----
+// -------------------------------------------------------------- restore ----
 
-fn job_path(app: &AppHandle) -> Option<PathBuf> {
-    Some(data_dir(app)?.join("backup-job.json"))
+/// How much of the bucket copy to bring back.
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum RestoreMode {
+    /// Only download what is in the bucket but missing locally. Never touches existing files.
+    Missing,
+    /// Make the folder match the bucket: also replace files that differ from the backup
+    /// (different size, or edited after the backup was made).
+    Full,
 }
 
-/// Saves the job so it can resume after a restart. `config = None` keeps the
-/// stored config and only flips `active`.
-fn save_job(app: &AppHandle, config: Option<&JobConfig>, active: bool) {
-    let Some(path) = job_path(app) else { return };
-    let existing: Option<StoredJob> = std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok());
-    let config = match (config, existing) {
-        (Some(c), _) => c.clone(),
-        (None, Some(e)) => e.config,
-        (None, None) => return,
+/// A bucket key is only restored if it stays inside the folder.
+fn safe_rel(rel: &str) -> bool {
+    !rel.is_empty()
+        && rel.split('/').all(|p| {
+            !p.is_empty()
+                && p != "."
+                && p != ".."
+                && !p.contains('\\')
+                && !(cfg!(windows) && p.contains(':'))
+        })
+}
+
+fn safe_join(root: &Path, rel: &str) -> PathBuf {
+    rel.split('/').fold(root.to_path_buf(), |p, c| p.join(c))
+}
+
+/// `(key, size, bucket modified ms)` of every file that has to be downloaded.
+/// `remote` and `local` map key -> (size, modified ms).
+fn plan_restore(
+    remote: &HashMap<String, (u64, u64)>,
+    local: &HashMap<String, (u64, u64)>,
+    mode: RestoreMode,
+) -> Vec<(String, u64, u64)> {
+    let mut out: Vec<(String, u64, u64)> = remote
+        .iter()
+        .filter(|(k, _)| safe_rel(k.as_str()))
+        .filter(|(k, (rsize, rmtime))| match local.get(k.as_str()) {
+            None => true,
+            Some((lsize, lmtime)) => mode == RestoreMode::Full && (lsize != rsize || lmtime > rmtime),
+        })
+        .map(|(k, (s, m))| (k.clone(), *s, *m))
+        .collect();
+    out.sort();
+    out
+}
+
+fn download_one(
+    cfg: &JobConfig,
+    root: &Path,
+    rel: &str,
+    remote_mtime: u64,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    if !safe_rel(rel) {
+        return Err(format!("Unsafe file name in the bucket: {rel}"));
+    }
+    let dest = safe_join(root, rel);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let args = vec![
+        "cp".to_string(),
+        "--json".to_string(),
+        remote_path(&cfg.destination, rel),
+        dest.to_string_lossy().into_owned(),
+    ];
+    let out = run_mc(&cfg.mc_path, &args, stop)?;
+    if out.code != 0 {
+        return Err(mc_message(&out));
+    }
+    // Stamp the file with the backup time, so a later "full restore" sees it as identical
+    // and the backup does not treat it as a fresh edit.
+    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&dest) {
+        let _ = f.set_modified(UNIX_EPOCH + Duration::from_millis(remote_mtime));
+    }
+    Ok(())
+}
+
+/// Downloads `items` with `WORKERS` parallel `mc cp` processes. Returns those that succeeded.
+fn download_round(
+    app: &AppHandle,
+    shared: &Shared,
+    cfg: &JobConfig,
+    stop: &AtomicBool,
+    root: &Path,
+    items: &[(String, u64, u64)],
+) -> Vec<(String, u64, u64)> {
+    let next = AtomicUsize::new(0);
+    let done: Mutex<Vec<(String, u64, u64)>> = Mutex::new(Vec::new());
+
+    thread::scope(|scope| {
+        for _ in 0..WORKERS.min(items.len()) {
+            scope.spawn(|| loop {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                let Some((rel, size, mtime)) = items.get(i) else { return };
+
+                update(app, shared, stop, false, |s| s.current.push(rel.clone()));
+                let result = download_one(cfg, root, rel, *mtime, stop);
+                if matches!(&result, Err(e) if e == "stopped") {
+                    return;
+                }
+                update(app, shared, stop, false, |s| {
+                    s.current.retain(|c| c != rel);
+                    match &result {
+                        Ok(()) => {
+                            s.files_done += 1;
+                            s.bytes_done += *size;
+                            s.restored += 1;
+                            s.error.clear();
+                            push_change(shared, s, "restore", rel, *size);
+                        }
+                        Err(msg) => {
+                            s.failed += 1;
+                            s.failed_total += 1;
+                            s.error = msg.clone();
+                            push_change(shared, s, "error", rel, *size);
+                        }
+                    }
+                });
+                if result.is_ok() {
+                    done.lock().unwrap().push((rel.clone(), *size, *mtime));
+                }
+            });
+        }
+    });
+    done.into_inner().unwrap()
+}
+
+fn restore_run(
+    app: AppHandle,
+    shared: Arc<Shared>,
+    cfg: JobConfig,
+    mode: RestoreMode,
+    stop: Arc<AtomicBool>,
+    previous: Option<JoinHandle<()>>,
+    resume_after: bool,
+) {
+    // The backup of this folder was stopped by `restore`; wait until it is really gone.
+    if let Some(p) = previous {
+        let _ = p.join();
+    }
+    let (app_ref, sh, st) = (&app, &*shared, &*stop);
+    let root = PathBuf::from(&cfg.folder);
+    let dir = data_dir(app_ref);
+
+    match run_mc(&cfg.mc_path, &["--version".to_string()], st) {
+        Ok(o) if o.code == 0 => {}
+        Ok(o) => return fail(app_ref, sh, st, mc_message(&o)),
+        Err(e) if e == "stopped" => return,
+        Err(e) => return fail(app_ref, sh, st, e),
+    }
+
+    let remote = match list_remote(&cfg, st) {
+        Ok(m) => m,
+        Err(e) if e == "stopped" => return,
+        Err(e) => return fail(app_ref, sh, st, e),
     };
-    if let Ok(bytes) = serde_json::to_vec(&StoredJob { config, active }) {
+    if remote.is_empty() {
+        return fail(
+            app_ref,
+            sh,
+            st,
+            "There is nothing in the bucket for this folder yet.".into(),
+        );
+    }
+    // The folder may be gone entirely (that is the point of a full restore).
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        return fail(app_ref, sh, st, format!("Could not create {}: {e}", cfg.folder));
+    }
+
+    let local: HashMap<String, (u64, u64)> = scan(&root, 0, now_ms(), st)
+        .into_iter()
+        .map(|l| (l.rel, (l.size, l.mtime)))
+        .collect();
+    if st.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let todo = plan_restore(&remote, &local, mode);
+    let total_bytes: u64 = todo.iter().map(|t| t.1).sum();
+    update(app_ref, sh, st, true, |s| {
+        s.phase = Phase::Restoring;
+        s.files_total = todo.len() as u64;
+        s.bytes_total = total_bytes;
+        s.files_done = 0;
+        s.bytes_done = 0;
+        s.failed = 0;
+        s.current.clear();
+        s.error.clear();
+    });
+
+    let restored = download_round(app_ref, sh, &cfg, st, &root, &todo);
+
+    // Tell the backup index what is now in sync, so the watcher does not upload it again.
+    if let Some(d) = &dir {
+        let mut index = Index::load(d, &cfg);
+        for (rel, size, mtime) in &restored {
+            index.files.insert(
+                rel.clone(),
+                Entry {
+                    mtime: *mtime,
+                    size: *size,
+                },
+            );
+            index.missing.remove(rel);
+        }
+        for (rel, (lsize, lmtime)) in &local {
+            if let Some((rsize, rmtime)) = remote.get(rel) {
+                if rsize == lsize && rmtime >= lmtime {
+                    index.files.entry(rel.clone()).or_insert(Entry {
+                        mtime: *lmtime,
+                        size: *lsize,
+                    });
+                }
+            }
+        }
+        index.save(d);
+    }
+    if st.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let failed = sh.snap.lock().unwrap().failed;
+    update(app_ref, sh, st, true, |s| {
+        s.phase = Phase::Done;
+        s.current.clear();
+        s.error = if failed > 0 {
+            format!("{failed} file(s) could not be restored")
+        } else {
+            String::new()
+        };
+    });
+
+    // If the folder was being backed up before the restore, carry on with it.
+    if resume_after && !st.load(Ordering::SeqCst) {
+        let _ = app_ref.state::<Engine>().start(app_ref, cfg);
+    }
+}
+
+// ------------------------------------------------------------ job store ----
+
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+fn jobs_path(app: &AppHandle) -> Option<PathBuf> {
+    Some(data_dir(app)?.join("backup-jobs.json"))
+}
+
+fn load_jobs(app: &AppHandle) -> Vec<StoredJob> {
+    jobs_path(app)
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn store_jobs(app: &AppHandle, jobs: &[StoredJob]) {
+    let Some(path) = jobs_path(app) else { return };
+    if let Ok(bytes) = serde_json::to_vec(jobs) {
         write_atomic(&path, &bytes);
     }
 }
 
-fn load_job(app: &AppHandle) -> Option<StoredJob> {
-    let path = job_path(app)?;
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+/// Saves a job so it can resume after a restart. `config = None` keeps the
+/// stored config and only flips `active`.
+fn save_job(app: &AppHandle, config: Option<&JobConfig>, id: &str, active: bool) {
+    let _guard = STORE_LOCK.lock().unwrap();
+    let mut jobs = load_jobs(app);
+    let pos = jobs.iter().position(|j| j.config.id == id);
+    match (pos, config) {
+        (Some(i), Some(c)) => {
+            jobs[i].config = c.clone();
+            jobs[i].active = active;
+        }
+        (Some(i), None) => jobs[i].active = active,
+        (None, Some(c)) => jobs.push(StoredJob {
+            config: c.clone(),
+            active,
+        }),
+        (None, None) => return,
+    }
+    store_jobs(app, &jobs);
+}
+
+fn remove_job(app: &AppHandle, id: &str) {
+    let _guard = STORE_LOCK.lock().unwrap();
+    let mut jobs = load_jobs(app);
+    jobs.retain(|j| j.config.id != id);
+    store_jobs(app, &jobs);
 }
 
 // --------------------------------------------------------------- engine ----
 
+fn clean_id(id: &str) -> String {
+    let id: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if id.is_empty() { "job".into() } else { id }
+}
+
+fn normalize(mut config: JobConfig) -> Result<JobConfig, String> {
+    if config.folder.is_empty() || config.destination.is_empty() {
+        return Err("Choose a folder and a bucket first".into());
+    }
+    config.id = clean_id(&config.id);
+    Ok(config)
+}
+
+struct Prepared {
+    shared: Arc<Shared>,
+    previous: Option<JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
+    /// The job was backing up (or watching) when this call came in.
+    was_active: bool,
+}
+
+fn publish_current(app: &AppHandle, shared: &Shared) {
+    let snap = shared.snap.lock().unwrap().clone();
+    publish(app, shared, &snap, true);
+}
+
 impl Engine {
+    /// True while any folder is being backed up or restored.
     pub fn is_running(&self) -> bool {
-        self.shared.snap.lock().unwrap().is_active()
+        self.jobs
+            .lock()
+            .unwrap()
+            .values()
+            .any(|j| j.shared.snap.lock().unwrap().is_active())
     }
 
-    pub fn snapshot(&self) -> Snapshot {
-        self.shared.snap.lock().unwrap().clone()
+    fn shared_of(&self, id: &str) -> Option<Arc<Shared>> {
+        self.jobs.lock().unwrap().get(id).map(|j| j.shared.clone())
+    }
+
+    pub fn snapshots(&self) -> HashMap<String, Snapshot> {
+        let all: Vec<Arc<Shared>> = self
+            .jobs
+            .lock()
+            .unwrap()
+            .values()
+            .map(|j| j.shared.clone())
+            .collect();
+        all.into_iter()
+            .map(|sh| (sh.id.clone(), sh.snap.lock().unwrap().clone()))
+            .collect()
+    }
+
+    /// One combined snapshot of every job, for the tray and the taskbar.
+    pub fn aggregate(&self) -> Snapshot {
+        let all: Vec<Arc<Shared>> = self
+            .jobs
+            .lock()
+            .unwrap()
+            .values()
+            .map(|j| j.shared.clone())
+            .collect();
+        let rank = |p: Phase| match p {
+            Phase::Restoring | Phase::Syncing => 6u8,
+            Phase::Scanning => 5,
+            Phase::Starting => 4,
+            Phase::Watching => 3,
+            Phase::Error => 2,
+            Phase::Done => 1,
+            Phase::Idle => 0,
+        };
+        let mut agg = Snapshot::default();
+        let mut best = 0u8;
+        for sh in all {
+            let s = sh.snap.lock().unwrap();
+            if rank(s.phase) > best {
+                best = rank(s.phase);
+                agg.phase = s.phase;
+            }
+            if matches!(s.phase, Phase::Syncing | Phase::Restoring) {
+                agg.files_done += s.files_done;
+                agg.files_total += s.files_total;
+                agg.bytes_done += s.bytes_done;
+                agg.bytes_total += s.bytes_total;
+            }
+            agg.pending += s.pending;
+            agg.uploaded += s.uploaded;
+            agg.removed += s.removed;
+            agg.restored += s.restored;
+            agg.failed_total += s.failed_total;
+            agg.settle_minutes = agg.settle_minutes.max(s.settle_minutes);
+            if agg.error.is_empty() && !s.error.is_empty() {
+                agg.error = s.error.clone();
+            }
+            agg.next_ready_at = match (agg.next_ready_at, s.next_ready_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        agg.recompute_percent();
+        agg
+    }
+
+    /// Registers the job, stops whatever it was doing and resets its snapshot to `phase`.
+    fn prepare(&self, config: &JobConfig, phase: Phase) -> Result<Prepared, String> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let job = jobs.entry(config.id.clone()).or_insert_with(|| Job {
+            shared: Arc::new(Shared::new(&config.id)),
+            run: None,
+        });
+        let mut s = job.shared.snap.lock().unwrap();
+        let was_active = s.is_active();
+        if phase == Phase::Restoring {
+            if s.phase == Phase::Restoring {
+                return Err("This folder is already being restored".into());
+            }
+        } else if was_active {
+            return Err("This folder is already being backed up or restored".into());
+        }
+
+        let previous = job.run.take().map(|r| {
+            r.stop.store(true, Ordering::SeqCst);
+            r.handle
+        });
+        let keep = std::mem::take(&mut s.changes);
+        *s = Snapshot {
+            phase,
+            destination: config.destination.clone(),
+            settle_minutes: config.settle_minutes,
+            changes: keep,
+            ..Default::default()
+        };
+        drop(s);
+        Ok(Prepared {
+            shared: job.shared.clone(),
+            previous,
+            stop: Arc::new(AtomicBool::new(false)),
+            was_active,
+        })
+    }
+
+    fn set_run(&self, id: &str, run: Run) {
+        if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
+            job.run = Some(run);
+        }
     }
 
     /// Non-blocking: safe to call from the tray menu / main thread.
     pub fn start(&self, app: &AppHandle, config: JobConfig) -> Result<(), String> {
-        if self.is_running() {
-            return Err("A backup is already running".into());
-        }
-        if config.folder.is_empty() || config.destination.is_empty() {
-            return Err("Choose a folder and a bucket first".into());
-        }
+        let config = normalize(config)?;
+        let Prepared {
+            shared,
+            previous,
+            stop,
+            ..
+        } = self.prepare(&config, Phase::Starting)?;
 
-        let mut slot = self.run.lock().unwrap();
-        let previous = slot.take().map(|r| {
-            r.stop.store(true, Ordering::SeqCst);
-            r.handle
+        save_job(app, Some(&config), &config.id, true);
+        publish_current(app, &shared);
+
+        let (app2, sh2, stop2, id) = (app.clone(), shared, stop.clone(), config.id.clone());
+        let handle = thread::spawn(move || run(app2, sh2, config, stop2, previous));
+        self.set_run(&id, Run { stop, handle });
+        Ok(())
+    }
+
+    /// Stops this folder's backup, downloads from the bucket, then carries on with the
+    /// backup if it was running. Non-blocking.
+    pub fn restore(
+        &self,
+        app: &AppHandle,
+        config: JobConfig,
+        mode: RestoreMode,
+    ) -> Result<(), String> {
+        let config = normalize(config)?;
+        let Prepared {
+            shared,
+            previous,
+            stop,
+            was_active,
+        } = self.prepare(&config, Phase::Restoring)?;
+
+        // If the app quits half way, it must not resume a half-restored backup.
+        save_job(app, Some(&config), &config.id, false);
+        publish_current(app, &shared);
+
+        let (app2, sh2, stop2, id) = (app.clone(), shared, stop.clone(), config.id.clone());
+        let handle = thread::spawn(move || {
+            restore_run(app2, sh2, config, mode, stop2, previous, was_active)
         });
-
-        let stop = Arc::new(AtomicBool::new(false));
-        {
-            let mut s = self.shared.snap.lock().unwrap();
-            let keep = s.changes.clone();
-            *s = Snapshot {
-                phase: Phase::Starting,
-                destination: config.destination.clone(),
-                settle_minutes: config.settle_minutes,
-                changes: keep,
-                ..Default::default()
-            };
-        }
-        save_job(app, Some(&config), true);
-        let snap = self.snapshot();
-        publish(app, &self.shared, &snap, true);
-
-        let (app2, shared, stop2) = (app.clone(), self.shared.clone(), stop.clone());
-        let handle = thread::spawn(move || run(app2, shared, config, stop2, previous));
-        *slot = Some(Run { stop, handle });
+        self.set_run(&id, Run { stop, handle });
         Ok(())
     }
 
     /// Non-blocking: the worker notices within ~100 ms and kills its `mc` children.
-    pub fn stop(&self, app: &AppHandle) {
-        if let Some(run) = self.run.lock().unwrap().as_ref() {
-            run.stop.store(true, Ordering::SeqCst);
-        }
+    pub fn stop(&self, app: &AppHandle, id: &str) {
+        let shared = {
+            let jobs = self.jobs.lock().unwrap();
+            let Some(job) = jobs.get(id) else { return };
+            if let Some(run) = &job.run {
+                run.stop.store(true, Ordering::SeqCst);
+            }
+            job.shared.clone()
+        };
         let snap = {
-            let mut s = self.shared.snap.lock().unwrap();
+            let mut s = shared.snap.lock().unwrap();
             s.phase = Phase::Idle;
             s.error.clear();
             s.current.clear();
@@ -983,39 +1453,72 @@ impl Engine {
             s.recompute_percent();
             s.clone()
         };
-        save_job(app, None, false);
-        publish(app, &self.shared, &snap, true);
+        save_job(app, None, id, false);
+        publish(app, &shared, &snap, true);
     }
 
-    /// App is exiting: stop the workers and kill their `mc` children, but keep the
-    /// saved job active so the backup resumes on the next launch.
-    pub fn shutdown(&self) {
-        if let Some(run) = self.run.lock().unwrap().as_ref() {
-            run.stop.store(true, Ordering::SeqCst);
-            let end = Instant::now() + Duration::from_secs(1);
-            while !run.handle.is_finished() && Instant::now() < end {
-                thread::sleep(Duration::from_millis(50));
-            }
+    pub fn stop_all(&self, app: &AppHandle) {
+        let ids: Vec<String> = self.jobs.lock().unwrap().keys().cloned().collect();
+        for id in ids {
+            self.stop(app, &id);
         }
     }
 
-    /// Tray "Start/Stop": start again with the last saved job.
+    /// The folder was removed from the list: stop it and drop everything stored for it.
+    pub fn forget(&self, app: &AppHandle, id: &str) {
+        self.stop(app, id);
+        self.jobs.lock().unwrap().remove(id);
+        remove_job(app, id);
+        if let Some(d) = data_dir(app) {
+            let _ = std::fs::remove_file(Index::path(&d, id));
+        }
+        tray::update(app, &self.aggregate());
+    }
+
+    /// App is exiting: stop the workers and kill their `mc` children, but keep the
+    /// saved jobs active so they resume on the next launch.
+    pub fn shutdown(&self) {
+        for job in self.jobs.lock().unwrap().values() {
+            if let Some(run) = &job.run {
+                run.stop.store(true, Ordering::SeqCst);
+            }
+        }
+        let end = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < end {
+            let all_done = self
+                .jobs
+                .lock()
+                .unwrap()
+                .values()
+                .all(|j| j.run.as_ref().map_or(true, |r| r.handle.is_finished()));
+            if all_done {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Tray "Start/Stop": stop everything, or start every saved folder again.
     pub fn toggle(&self, app: &AppHandle) {
         if self.is_running() {
-            self.stop(app);
-        } else if let Some(job) = load_job(app) {
+            self.stop_all(app);
+            return;
+        }
+        for job in load_jobs(app) {
+            let id = clean_id(&job.config.id);
             if let Err(e) = self.start(app, job.config) {
-                let mut s = self.shared.snap.lock().unwrap();
-                s.error = e;
+                if let Some(sh) = self.shared_of(&id) {
+                    sh.snap.lock().unwrap().error = e;
+                }
             }
         }
     }
 }
 
-/// Called once at launch: continue a backup that was running when the app quit.
+/// Called once at launch: continue the backups that were running when the app quit.
 pub fn resume(app: &AppHandle) {
     let engine = app.state::<Engine>();
-    if let Some(job) = load_job(app) {
+    for job in load_jobs(app) {
         if job.active {
             let _ = engine.start(app, job.config);
         }
@@ -1034,13 +1537,28 @@ pub fn backup_start(
 }
 
 #[tauri::command]
-pub fn backup_stop(app: AppHandle, engine: State<'_, Engine>) {
-    engine.stop(&app);
+pub fn backup_restore(
+    app: AppHandle,
+    engine: State<'_, Engine>,
+    config: JobConfig,
+    mode: RestoreMode,
+) -> Result<(), String> {
+    engine.restore(&app, config, mode)
 }
 
 #[tauri::command]
-pub fn backup_state(engine: State<'_, Engine>) -> Snapshot {
-    engine.snapshot()
+pub fn backup_stop(app: AppHandle, engine: State<'_, Engine>, id: String) {
+    engine.stop(&app, &clean_id(&id));
+}
+
+#[tauri::command]
+pub fn backup_forget(app: AppHandle, engine: State<'_, Engine>, id: String) {
+    engine.forget(&app, &clean_id(&id));
+}
+
+#[tauri::command]
+pub fn backup_state(engine: State<'_, Engine>) -> HashMap<String, Snapshot> {
+    engine.snapshots()
 }
 
 // ---------------------------------------------------------------- tests ----
@@ -1124,6 +1642,44 @@ mod tests {
     }
 
     #[test]
+    fn restore_paths_must_stay_inside_the_folder() {
+        assert!(safe_rel("a.txt"));
+        assert!(safe_rel("sub/dir/a.txt"));
+        assert!(!safe_rel(""));
+        assert!(!safe_rel("../a.txt"));
+        assert!(!safe_rel("sub/../../a.txt"));
+        assert!(!safe_rel("/etc/passwd"));
+        assert!(!safe_rel("sub//a.txt"));
+        assert!(!safe_rel("sub\\a.txt"));
+    }
+
+    #[test]
+    fn restore_plan_missing_vs_full() {
+        let mut remote = HashMap::new();
+        remote.insert("gone.txt".to_string(), (5u64, 1000u64));
+        remote.insert("same.txt".to_string(), (5, 1000));
+        remote.insert("edited.txt".to_string(), (5, 1000)); // local edited after the backup
+        remote.insert("resized.txt".to_string(), (5, 1000)); // local has another size
+        remote.insert("../evil.txt".to_string(), (5, 1000));
+
+        let mut local = HashMap::new();
+        local.insert("same.txt".to_string(), (5u64, 900u64));
+        local.insert("edited.txt".to_string(), (5, 2000));
+        local.insert("resized.txt".to_string(), (9, 900));
+        local.insert("only-local.txt".to_string(), (1, 1));
+
+        let names = |v: Vec<(String, u64, u64)>| v.into_iter().map(|t| t.0).collect::<Vec<_>>();
+        assert_eq!(
+            names(plan_restore(&remote, &local, RestoreMode::Missing)),
+            ["gone.txt"]
+        );
+        assert_eq!(
+            names(plan_restore(&remote, &local, RestoreMode::Full)),
+            ["edited.txt", "gone.txt", "resized.txt"]
+        );
+    }
+
+    #[test]
     fn rfc3339_parsing() {
         assert_eq!(parse_rfc3339_ms("2024-05-01T10:00:00Z"), Some(1_714_557_600_000));
         assert_eq!(
@@ -1148,6 +1704,7 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cfg = JobConfig {
+            id: "t".into(),
             folder: dir.to_string_lossy().into_owned(),
             destination: "alias/bucket/prefix".into(),
             mc_path: path.to_string_lossy().into_owned(),

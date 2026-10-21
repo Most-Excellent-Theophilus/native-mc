@@ -5,7 +5,7 @@
 
   import { page } from "$app/state";
   import { ensureMc } from "$lib/comands";
-  import { isLoggedIn } from "$lib/mcAuth";
+  import { localLogins, verifyLogin } from "$lib/mcAuth";
   import { Toaster } from "$lib/components/ui/sonner";
   import * as Alert from "$lib/components/ui/alert";
   import { Button } from "$lib/components/ui/button";
@@ -24,6 +24,9 @@
   let downloading = $state(false);
   let progress = $state<number | null>(null);
 
+  // What the loading screen is waiting on, so a stall is visible instead of silent.
+  let stage = $state("Starting…");
+
   async function init(toastId: string | number): Promise<"ready" | "login"> {
     status = "checking";
     errorMessage = "";
@@ -31,6 +34,7 @@
     progress = null;
 
     try {
+      stage = "Checking storage client…";
       const mc = await ensureMc({
         onProgress: (p) => {
           downloading = true;
@@ -46,13 +50,17 @@
       downloading = false;
       toast.loading("Checking client…", { id: toastId });
 
-      const loggedIn = await isLoggedIn(mc);
+      // Always (re)register the autostart entry (it carries --hidden). It has nothing to
+      // do with being ready, so it must never hold up the UI.
+      void enable().catch((e) => console.warn("Autostart not enabled:", e));
 
-      // Always (re)register: the entry carries --hidden so a login launch goes
-      // straight to the tray, and older installs registered it without that.
-      await enable();
+      // Only read mc's local config here: no network. Whether the server still accepts
+      // the login is checked in the background below, so a slow or offline server can
+      // never keep you on the loading screen (and never logs you out by itself).
+      stage = "Reading saved login…";
+      const logins = await localLogins(mc);
 
-      if (!loggedIn) {
+      if (logins.length === 0) {
         // don't redirect if we're already on the login page
         if (page.url.pathname !== "/auth") {
           await goto("/auth", { replaceState: true });
@@ -62,6 +70,12 @@
       }
 
       status = "ready";
+      void verifyLogin(mc, logins[0]).then(async (state) => {
+        if (state === "invalid") {
+          toast.error("The server rejected your saved login. Please sign in again.");
+          if (page.url.pathname !== "/auth") await goto("/auth", { replaceState: true });
+        }
+      });
       return "ready";
     } catch (e) {
       downloading = false;
@@ -101,6 +115,9 @@
 {:else}
   <div class="flex h-screen flex-col items-center justify-center gap-6">
     <div class="animate-pulse"><Logo /></div>
+    {#if !downloading}
+      <p class="text-xs text-muted-foreground">{stage}</p>
+    {/if}
 
     {#if downloading}
       <div class="w-56">

@@ -3,8 +3,8 @@
 <!-- <FileGrid path="Screenshots/" />   or let it list the folder itself -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import Folder from '@lucide/svelte/icons/folder';
-	import { listDir, type Entry } from '$lib/bucketFiles';
+		import Folder from '@lucide/svelte/icons/folder';
+	import { listDir, uploaderOf, inCommon, type Entry } from '$lib/bucketFiles';
 	
 	import { settings } from '$lib/store/settings.svelte';
   import { generateFileIcon, generateFileIconOnly } from '$lib/hooks/image-uploader';
@@ -36,6 +36,9 @@
 	$effect(() => {
 		if (given === undefined) void load(path);
 	});
+
+	// In the common bucket each file sits under a folder named after its uploader.
+	const common = $derived(list.length > 0 && inCommon(list[0].path));
 
 	const ext = (name: string) => (name.includes('.') ? (name.split('.').pop() ?? '') : '');
 	const open = (p: string) => goto(`/preview?path=${encodeURIComponent(p)}`);
@@ -78,6 +81,11 @@
 					<span class="hidden w-16 shrink-0 text-xs text-muted-foreground uppercase sm:block">
 						{e.dir ? 'Folder' : ext(e.name) || 'File'}
 					</span>
+					{#if common}
+						<span class="hidden w-28 shrink-0 truncate text-xs text-muted-foreground md:block">
+							{e.dir ? '' : uploaderOf(e.path)}
+						</span>
+					{/if}
 					<span class="w-20 shrink-0 text-right text-xs text-muted-foreground">
 						{e.dir ? '' : formatBytes(e.size)}
 					</span>
@@ -128,6 +136,9 @@
 				<div class="absolute inset-x-0 bottom-0 z-10 p-3">
 					<p class="truncate text-xs font-medium text-foreground">{e.name}</p>
 					<p class="mt-1 text-[10px] text-muted-foreground">{e.dir ? '' : formatBytes(e.size)}</p>
+					{#if common && !e.dir && uploaderOf(e.path)}
+						<p class="truncate text-[10px] text-muted-foreground">by {uploaderOf(e.path)}</p>
+					{/if}
 				</div>
 			</button>
 		{/each}

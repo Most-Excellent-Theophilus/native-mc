@@ -27,6 +27,8 @@
     statFile,
     fetchToCache,
     downloadTo,
+    inCommon,
+    uploaderOf,
     type Entry,
   } from "$lib/bucketFiles";
   import { ChevronLeft } from "@lucide/svelte";
@@ -39,7 +41,6 @@
     return new URLSearchParams(window.location.search).get("path") ?? "";
   });
   const isFolder = $derived(path === "" || path.endsWith("/"));
-  const bucket = $derived(settings.data.backupBucket);
 
   const fileName = $derived(path.split("/").filter(Boolean).pop() ?? "");
 
@@ -49,12 +50,13 @@
     name: string;
     contentType: string;
     size: number;
+    uploadedBy: string;
   } | null>(null);
   let url = $state("");
   let loading = $state(false);
   let error = $state("");
   let note = $state("");
-  
+
   let busy = $state(false);
   let tooBig = $state(false);
   let token = 0; // ignore results of an older navigation
@@ -68,7 +70,7 @@
   onDestroy(dropUrl);
 
   async function load() {
-     const mine = ++token;
+    const mine = ++token;
     const p = path;
     const folder = isFolder;
     loading = true;
@@ -91,6 +93,7 @@
           name: p.split("/").pop() ?? p,
           contentType: info.contentType,
           size: info.size,
+          uploadedBy: uploaderOf(p),
         };
         if (info.size > MAX_PREVIEW_BYTES) {
           tooBig = true;
@@ -118,15 +121,13 @@
     }
   }
 
-   $effect(() => {
+  $effect(() => {
     path;
-    bucket;
+    settings.data.s3Alias;
     untrack(() => {
       void load();
     });
   });
-
- 
 
   async function openExternally() {
     if (!file) return;
@@ -180,62 +181,55 @@
         >
       </Card.Header>
     </Card.Root>
-  {:else if !bucket}
-    <Card.Root class="bg-primary/5">
-      <Card.Header>
-        <Card.Title>No bucket selected</Card.Title>
-        <Card.Description
-          >Choose a bucket in the backup card first.</Card.Description
-        >
-      </Card.Header>
-    </Card.Root>
   {:else if isFolder}
     <!-- Folder -->
     <Card.Root class="bg-primary/5">
-      <Card.Header class='flex items-center justify-between'>
+      <Card.Header class="flex items-center justify-between">
         <Button
-              variant="outline"
-              size="lg"
-              onclick={() => {
-                window.history.back();
-              }}><ChevronLeft /> </Button
-            >
+          variant="outline"
+          size="lg"
+          onclick={() => {
+            window.history.back();
+          }}
+          ><ChevronLeft />
+        </Button>
 
-      <div class="text-center items-center flex flex-col">
+        <div class="text-center items-center flex flex-col">
           <Card.Title class="flex flex-wrap items-center gap-2 text-base">
-          <span class="break-all">{path ? fileName : bucket}</span>
-           {#if !loading && !error}
-            <Badge variant="outline"
-              >{entries.length} {entries.length === 1 ? "item" : "items"}</Badge
+            <span class="break-all"
+              >{path ? path.replace(/\/$/, "") : "All buckets"}</span
             >
-          {/if}
-        </Card.Title>
-        <Card.Description>Select a folder or file to open it.</Card.Description> 
-      </div>
-      <div>
-              <Button
-                size="lg"
-                variant={settings.data.viewMode === "grid"
-                  ? "default"
-                  : "ghost"}
-                aria-pressed={settings.data.viewMode === "grid"}
-                onclick={() => settings.set("viewMode", "grid")}
+            {#if !loading && !error}
+              <Badge variant="outline"
+                >{entries.length}
+                {entries.length === 1 ? "item" : "items"}</Badge
               >
-                <LayoutGridIcon class="size-4" />
-                <span class="sr-only">Grid view</span>
-              </Button>
-              <Button
-                size="lg"
-                variant={settings.data.viewMode === "list"
-                  ? "default"
-                  : "ghost"}
-                aria-pressed={settings.data.viewMode === "list"}
-                onclick={() => settings.set("viewMode", "list")}
-              >
-                <ListIcon class="size-4" />
-                <span class="sr-only">List view</span>
-              </Button>
-            </div>
+            {/if}
+          </Card.Title>
+          <Card.Description
+            >Select a folder or file to open it.</Card.Description
+          >
+        </div>
+        <div>
+          <Button
+            size="lg"
+            variant={settings.data.viewMode === "grid" ? "default" : "ghost"}
+            aria-pressed={settings.data.viewMode === "grid"}
+            onclick={() => settings.set("viewMode", "grid")}
+          >
+            <LayoutGridIcon class="size-4" />
+            <span class="sr-only">Grid view</span>
+          </Button>
+          <Button
+            size="lg"
+            variant={settings.data.viewMode === "list" ? "default" : "ghost"}
+            aria-pressed={settings.data.viewMode === "list"}
+            onclick={() => settings.set("viewMode", "list")}
+          >
+            <ListIcon class="size-4" />
+            <span class="sr-only">List view</span>
+          </Button>
+        </div>
       </Card.Header>
       <Card.Content>
         {#if loading}
@@ -252,7 +246,6 @@
             This folder is empty.
           </p>
         {:else}
-         
           <FileGrid {entries} />
         {/if}
       </Card.Content>
@@ -260,37 +253,45 @@
   {:else}
     <!-- File -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-       <Button
-              variant="outline"
-              size="lg"
-              onclick={() => {
-                window.history.back();
-              }}><ChevronLeft /> Back </Button
-            >
+      <Button
+        variant="outline"
+        size="lg"
+        title='Back'
+        onclick={() => {
+          window.history.back();
+        }}
+        ><ChevronLeft />
+      </Button>
 
       <div class="min-w-0 text-center">
         <h2 class="text-lg font-medium break-all">{fileName}</h2>
         {#if file}
-          <p class="text-xs text-muted-foreground">{formatBytes(file.size)}</p>
+          <p class="text-xs text-muted-foreground">
+            {formatBytes(file.size)}{#if inCommon(file.key)}
+              · uploaded by {file.uploadedBy || "unknown"}{/if}
+          </p>
         {/if}
       </div>
       <div class="flex gap-2">
         <Button
           variant="secondary"
-          size="sm"
+          title="Open externally"
+          size='lg'
+
           disabled={!file || busy}
           onclick={openExternally}
         >
-          <ExternalLinkIcon class="size-4" /> Open externally
+          <ExternalLinkIcon class="size-4" />
         </Button>
         <Button
           variant="outline"
-          size="sm"
+          size='lg'
+        title={busy ? "Saving…" : "Download"}
           disabled={!file || busy}
           onclick={download}
         >
           <DownloadIcon class="size-4" />
-          {busy ? "Saving…" : "Download"}
+          
         </Button>
       </div>
     </div>
@@ -322,10 +323,7 @@
           </p>
         </div>
       {:else}
-   
-
         <FilePreview {file} {url} {loading} {error} onRetry={load} />
-    
       {/if}
     </div>
   {/if}
