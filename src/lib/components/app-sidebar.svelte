@@ -187,8 +187,8 @@
         <Sidebar.Menu>
           <Sidebar.MenuItem>
             <Sidebar.MenuButton
-              onclick={() => {
-                goto("/");
+              onclick={ async () => {
+               await goto("/");
               }}
               isActive={page.url.pathname == "/"}
               class="cursor-pointer"
@@ -200,8 +200,8 @@
           <Sidebar.MenuItem>
             <Sidebar.MenuButton
               isActive={page.url.pathname == "/preview"}
-              onclick={() => {
-                goto("/preview");
+              onclick={async () => {
+               await goto("/preview");
               }}
               class="cursor-pointer"
             >

@@ -131,7 +131,7 @@ export function uniquePrefix(
 /**
  * Where a folder lands:
  *   private  <alias>/<personal bucket>/<your user>/<folder>   (the server only lets you into your own folder)
- *   common   <alias>/<common bucket>/<your user>/<folder>     (shared; the user folder shows who uploaded it)
+ *   common   <alias>/<common bucket>/<folder>                 (shared by everyone with access)
  */
 export function destinationFor(src: BackupSource): string {
   const s = settings.data;
@@ -152,6 +152,16 @@ function currentOptions(): RunOptions {
     watch: s.backupWatch,
     removeDeleted: s.backupRemoveDeleted && canDelete,
     settleMinutes: s.backupSettleMinutes,
+  };
+}
+
+/** The options one folder runs with: its own, else the defaults. */
+export function optionsFor(src: BackupSource): RunOptions {
+  const d = currentOptions();
+  return {
+    watch: src.watch ?? d.watch,
+    removeDeleted: (src.removeDeleted ?? d.removeDeleted) && canDelete,
+    settleMinutes: src.settleMinutes ?? d.settleMinutes,
   };
 }
 
@@ -187,7 +197,7 @@ function setError(id: string, e: unknown) {
   };
 }
 
-async function start(src: BackupSource, o: RunOptions = currentOptions()) {
+async function start(src: BackupSource, o: RunOptions = optionsFor(src)) {
   if (isActive(of(src.id))) return;
   try {
     await init();
@@ -203,7 +213,7 @@ async function start(src: BackupSource, o: RunOptions = currentOptions()) {
 async function restore(
   src: BackupSource,
   mode: RestoreMode,
-  o: RunOptions = currentOptions(),
+  o: RunOptions = optionsFor(src),
 ) {
   try {
     await init();
@@ -223,6 +233,18 @@ async function stop(id: string): Promise<void> {
 async function forget(id: string): Promise<void> {
   await invoke("backup_forget", { id });
   delete jobs[id];
+}
+
+/**
+ * Stops and forgets every folder job in the engine. Call when the signed-in user
+ * changes: the jobs belong to that user and must not keep running (or resume at
+ * next launch) under someone else's credentials.
+ */
+async function forgetAll(): Promise<void> {
+  await init();
+  const all = await invoke<Record<string, Snapshot>>("backup_state");
+  await Promise.all(Object.keys(all).map((id) => invoke("backup_forget", { id })));
+  jobs = {};
 }
 
 async function startAll(): Promise<void> {
@@ -313,6 +335,7 @@ export const backup = {
   stop,
   restore,
   forget,
+  forgetAll,
   startAll,
   stopAll,
   startFromSettings,

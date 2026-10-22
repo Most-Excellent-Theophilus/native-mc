@@ -8,6 +8,7 @@
   import { resolve } from "$app/paths";
   import { ensureMc } from "$lib/comands";
   import { removeAlias } from "$lib/mcAuth";
+  import { backup } from "$lib/backup.svelte";
   import { settings } from "$lib/store/settings.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { Mail } from "@lucide/svelte";
@@ -30,6 +31,8 @@
     try {
       const id = toast.loading("Signing Out");
       const mc = await ensureMc();
+      // This user's backups must not keep running (or resume) under the next login.
+      await backup.forgetAll();
       void (await Promise.allSettled([
         await removeAlias(mc, settings.data.s3Alias || "app"),
         await settings.set("s3AccessKey", ""),

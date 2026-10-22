@@ -26,6 +26,7 @@
     type RestoreMode,
   } from "$lib/backup.svelte";
   import { Slider } from "$lib/components/ui/slider/index.js";
+  import { set } from "zod";
 
   const s = $derived(settings.data);
   const sources = $derived(s.backupSources);
@@ -69,6 +70,7 @@
       prefix: uniquePrefix(newFolder, newTarget, sources),
     };
     await settings.set("backupSources", [...sources, src]);
+    await settings.set('backupSettleMinutes',15)
     newFolder = "";
     addError = "";
   }
@@ -292,16 +294,8 @@
               uploads right away.
             </p>
           </div>
-          <Input
-            id="backup-settle"
-            type="number"
-            min="0.1"
-            max="120"
-            step="0.1"
-            class="w-20 shrink-0"
-            value={s.backupSettleMinutes}
-            onchange={(e) => setSettle(e.currentTarget.value)}
-          />
+          <Badge class='bg-emerald-600 w-20'>{s.backupSettleMinutes} mins</Badge>
+         
         </div>
 
         <Slider
@@ -310,7 +304,7 @@
           max={120}
           step={0.1}
           value={s.backupSettleMinutes}
-          onValueChange={(e) => setSettle(e)}
+          onValueChange={(e) => setSettle(`${e}`)}
         />
         <div class="flex items-center justify-between gap-4">
           <div>

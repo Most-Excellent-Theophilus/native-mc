@@ -12,6 +12,7 @@
   import { ensureMc } from "$lib/comands";
   import { setAlias } from "$lib/mcAuth";
   import { settings } from "$lib/store/settings.svelte";
+  import { backup } from "$lib/backup.svelte";
   import { loginSchema } from "./network-schema";
   import { Eye, EyeClosed } from "@lucide/svelte";
 
@@ -32,9 +33,13 @@
         const mc = await ensureMc();
         await setAlias(mc, MC_ALIAS, endpoint, accessKey, secretKey);
 
+        // Signing in as someone else: the previous user's backups stop here.
+        const previous = settings.data.s3AccessKey;
+        if (previous && previous !== accessKey.trim()) await backup.forgetAll();
+
         // Save the non-secret parts. mc keeps the secret in its own config.
         await settings.set("s3Endpoint", endpoint);
-        await settings.set("s3AccessKey", accessKey);
+        await settings.set("s3AccessKey", accessKey.trim()); // loads this user's own settings
         await settings.set("s3Alias", MC_ALIAS);
 
         $formData.secretKey = "";
